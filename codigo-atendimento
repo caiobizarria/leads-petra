@@ -1,0 +1,90 @@
+# PROMPT DE IMPLEMENTAÇÃO: SISTEMA DE GESTÃO DE RETRABALHO E RECUPERAÇÃO DE LEADS
+
+Crie uma aplicação web completa (sugestão: Python com Streamlit ou FastAPI + React/Vite com SQLite local) voltada para gestão de retrabalho comercial e recuperação de leads do mercado imobiliário.
+
+---
+
+### 1. FONTE DE DADOS E UPLOAD DIÁRIO
+- O sistema deve ter uma área de upload direto na interface: `[ Carregar Relatório (.xlsx) ]`.
+- Ao subir o arquivo, o sistema processa a aba principal (`Atendimentos`) com base nas seguintes colunas reais:
+  - `Nome Cliente`
+  - `Celular Cliente` (limpar formatação para manter apenas dígitos numéricos)
+  - `Corretor`
+  - `Etapa do Funil`
+  - `Recebido em` (formato: DD/MM/AAAA HH:MM)
+  - `Último Contato em` (formato: DD/MM/AAAA HH:MM)
+  - `Negócio Perdido em`
+  - `Motivo Perda`
+- **Chave Primária do Lead:** Como não existe ID numérico fixo do CRM, use `Celular_Limpo` + `Recebido em` (ou hash equivalente) como identificador imutável.
+- **Persistência Local (SQLite ou JSON):** Os dados operacionais gerados no app (histórico de mensagens WhatsApp enviadas, datas de retrabalho, redistribuições e corretores originais) devem ser persistidos localmente e nunca apagados na subida de um novo arquivo diário.
+
+---
+
+### 2. MAPEAMENTO DE CATEGORIAS (REGRA FUNDAMENTAL)
+Classificar os leads da planilha em 3 tipos com base no campo `Etapa do Funil`:
+
+1. **AGUARDANDO PRIMEIRA INTERAÇÃO**
+   - Etapas: `'Em Tentativa'`, `'Lead na Base'`.
+   - **Regra:** Nunca pode ser redistribuído. Pertence obrigatoriamente ao corretor atual listado na planilha.
+   - Cálculo de dias: Diferença em dias entre a data atual e o `Recebido em` (ou `Último Contato em`).
+
+2. **EM ATENDIMENTO**
+   - Etapas: `'Em Atendimento - Primeiras Informações'`, `'Em Atendimento - Aguardando Disponibilidade'`, `'Visita Agendada'`, `'Visita Realizada'`, `'Negócio Fechado.'`.
+   - **Regra:** Nunca pode ser redistribuído. Pertence obrigatoriamente ao corretor atual.
+   - Tratar separadamente dos leads de 1ª interação.
+
+3. **PERDIDO**
+   - Etapas: `'Perdido'`, `'Visita Cancelada'`, `'Visita - Cliente Não Compareceu'`.
+   - **Regra:** Perde a exclusividade do corretor original. Entra na **Fila de Recuperação** e pode ser redistribuído.
+
+---
+
+### 3. CONTROLE DE DISPAROS DE WHATSAPP E STATUS DE RETRABALHO
+Para os leads em **Aguardando Primeira Interação** e **Em Atendimento**:
+- **Interface por Corretor:** Filtro suspensa para escolher o Corretor. Exibir apenas os leads dele.
+- **Filtros rápidos:**
+  - Faixas de dias: `0 a 3 dias`, `3 a 10 dias`, `Mais de 10 dias`.
+  - Situação de Retrabalho:
+    - `Nunca retrabalhados` (nunca foi clicado no app).
+    - `Já retrabalhados` (já recebeu disparo anterior).
+    - `Sem alteração no CRM` (já foi feito disparo no app em data D, mas a data do `Último Contato em` ou a `Etapa do Funil` no CRM continua igual à anterior).
+    - `Atualizados após retrabalho` (houve nova interação registrada na planilha mais recente que o último retrabalho).
+- **Ação de Retrabalho:**
+  - Botão **"Copiar Texto WhatsApp"**: gera mensagem pronta contextualizada (ex: *"Olá {Nome}, tudo bem? Aqui é o {Corretor}..."*).
+  - Botão **"Registrar como Enviado"**: registra no banco local:
+    - Data/hora do disparo
+    - Etapa no momento do envio
+    - Corretor responsável
+    - Marca o lead imediatamente como `Já Retrabalhado` para não duplicar esforço.
+
+---
+
+### 4. FILA DE RECUPERAÇÃO DE PERDIDOS E REDISTRIBUIÇÃO
+Tela dedicada: **"Leads Perdidos para Recuperação"**.
+- Listar: `Nome Cliente`, `Celular`, `Corretor Original`, `Motivo da Perda`, `Data da Perda`, `Dias desde a Perda`, `Tentativas anteriores de recuperação`.
+- Permitir seleção múltipla (checkboxes ou selecionar todos do filtro).
+- Modal / Ação de **Redistribuir Leads Selecionados**:
+  - Opções:
+    1. Escolher manualmente um único corretor de destino;
+    2. Distribuir igualmente entre corretores selecionados;
+    3. Rodízio circular (*Round-Robin*).
+  - **Prévia obrigatória antes de confirmar:**
+    `Tabela: Lead | Celular | Corretor Original | Novo Corretor Designado`
+  - Ao confirmar:
+    - Salvar no histórico local do lead: `Corretor Anterior`, `Novo Corretor`, `Data/Hora`, `Tentativa nº`.
+    - O lead sai da fila de perdidos e passa a constar na carteira do novo corretor com a tag `[Recuperação]`.
+
+---
+
+### 5. DETECÇÃO AUTOMÁTICA DE EVOLUÇÃO (CRUZAMENTO ENTRE DIAS)
+Ao fazer upload de uma nova planilha no dia seguinte, o sistema deve comparar os registros com o histórico:
+- **PERDIDO → EM ATENDIMENTO:** Marcar como `Recuperação bem-sucedida` com destaque visual no painel.
+- **AGUARDANDO PRIMEIRA INTERAÇÃO → EM ATENDIMENTO:** Marcar como `Contato efetivado`.
+- **EM ATENDIMENTO → PERDIDO:** Registrar encerramento e enviar para a Fila de Recuperação.
+
+---
+
+### REQUISITOS TÉCNICOS
+1. Crie uma interface limpa, rápida e responsiva.
+2. Não perca dados gravados no banco local durante uploads diários subsequentes (use `UPSERT` ou merge por chave única).
+3. Disponibilize botão para exportar a lista de leads redistribuídos ou retrabalhados em `.xlsx` ou `.csv` para conferência.
