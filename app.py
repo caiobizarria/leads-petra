@@ -179,11 +179,13 @@ def classificar_tipo(row):
     
     if etapa_str in ['Em Tentativa', 'Lead na Base']:
         return "1. Aguardando 1ª Interação"
-    elif etapa_str in ['Em Atendimento - Primeiras Informações', 'Em Atendimento - Aguardando Disponibilidade', 'Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']:
+    elif etapa_str in ['Em Atendimento - Primeiras Informações', 'Em Atendimento - Aguardando Disponibilidade']:
         return "2. Em Atendimento"
+    elif etapa_str in ['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']:
+        return "3. Visitas & Fechamento"
     elif etapa_str in ['Perdido', 'Visita Cancelada', 'Visita - Cliente Não Compareceu']:
         if motivo_perda.lower() == "tentativas de contato sem sucesso":
-            return "3. Perdidos para Recuperação"
+            return "4. Perdidos para Recuperação"
         else:
             return "Perdido (Outros Motivos)"
     return "Outros"
@@ -251,16 +253,53 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
+    aba_visao, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba6 = st.tabs([
+        "📊 Visão Geral & Consolidado",
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
-        "3. Perdidos para Recuperação",
-        "4. Auditoria de Malotes (Google Sheets)",
-        "5. Comparador de Planilhas (Raio-X)",
-        "6. Bloqueio de Leads"
+        "3. Visitas & Fechamento",
+        "4. Perdidos para Recuperação",
+        "5. Auditoria de Malotes (Google Sheets)",
+        "6. Comparador de Planilhas (Raio-X)",
+        "7. Bloqueio de Leads"
     ])
 
-    # --- ABAS 1 E 2 ---
+    # --- ABA CONSOLIDADA: VISÃO GERAL DE TODOS OS LEADS ---
+    with aba_visao:
+        st.subheader("Panorama Consolidado da Base Importada")
+        st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio e corretor.")
+
+        total_base = len(df)
+        total_1a = len(df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"])
+        total_atend = len(df[df['Tipo_Lead'] == "2. Em Atendimento"])
+        total_vis = len(df[df['Tipo_Lead'] == "3. Visitas & Fechamento"])
+        total_recup = len(df[df['Tipo_Lead'] == "4. Perdidos para Recuperação"])
+        total_outros_perd = len(df[df['Tipo_Lead'] == "Perdido (Outros Motivos)"])
+        total_bloq = len(df[df['Lead_Bloqueado']])
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total de Leads na Planilha", total_base)
+        m2.metric("Aguardando 1ª Interação", total_1a)
+        m3.metric("Em Atendimento Ativo", total_atend)
+        m4.metric("Visitas & Fechamentos", total_vis)
+        m5.metric("Fila de Recuperação", total_recup)
+
+        st.markdown("---")
+        col_v1, col_v2 = st.columns([1, 1])
+
+        with col_v1:
+            st.markdown("#### 📌 Distribuição Exata por Etapa do Funil no CRM")
+            df_etapas = df['Etapa do Funil'].value_counts().reset_index()
+            df_etapas.columns = ['Etapa do Funil', 'Quantidade de Leads']
+            df_etapas['% da Base'] = (df_etapas['Quantidade de Leads'] / total_base * 100).map("{:.1f}%".format)
+            st.dataframe(df_etapas, use_container_width=True, hide_index=True)
+
+        with col_v2:
+            st.markdown("#### 👥 Distribuição da Carteira por Corretor")
+            df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
+            st.dataframe(df_dist_corr, use_container_width=True)
+
+    # --- PAINEL PADRÃO PARA CORRETOR FIXO (ABAS 1, 2 E 3) ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
         df_ativos = df_tipo[~df_tipo['Lead_Bloqueado']].copy()
@@ -317,7 +356,7 @@ if arquivo_atual:
 
         leads_para_gravar = []
         for _, r in malote_atual.iterrows():
-            texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
+            texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']} ({r['Etapa do Funil']})\n"
             leads_para_gravar.append({
                 'lead_key': r['lead_key'], 
                 'nome': r['Nome Cliente'], 
@@ -337,13 +376,26 @@ if arquivo_atual:
             st.rerun()
 
         st.markdown("#### Detalhamento dos Leads Deste Malote")
-        st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
+        st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    # --- ABA 3: PERDIDOS ---
-    def renderizar_painel_perdidos(df_perdidos):
+    with aba1:
+        df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
+        renderizar_painel_corretor_fixo(df_1, "aba1", "Aguardando 1ª Interação")
+
+    with aba2:
+        df_2 = df[df['Tipo_Lead'] == "2. Em Atendimento"]
+        renderizar_painel_corretor_fixo(df_2, "aba2", "Em Atendimento")
+
+    with aba_visitas:
+        df_vis = df[df['Tipo_Lead'] == "3. Visitas & Fechamento"]
+        renderizar_painel_corretor_fixo(df_vis, "aba_visitas", "Visitas & Fechamento")
+
+    # --- ABA 4: PERDIDOS PARA RECUPERAÇÃO ---
+    with aba3:
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
         st.caption("Leads arquivados sem resposta. Registre a redistribuição para salvá-los no Google Sheets e retirá-los da fila ativa.")
         
+        df_perdidos = df[df['Tipo_Lead'] == "4. Perdidos para Recuperação"]
         df_perdidos_ativos = df_perdidos[~df_perdidos['Lead_Bloqueado']].copy()
 
         c1, c2, c3, c4 = st.columns(4)
@@ -376,90 +428,74 @@ if arquivo_atual:
         if filtro_cobranca == "Já Redistribuídos (Para Consulta)":
             st.info("Visualizando leads que já foram redistribuídos anteriormente.")
             st.dataframe(dados_base[['Nome Cliente', 'Celular_Limpo', 'Corretor', 'corretor_cobrado', 'data_ultima_cobranca', 'Motivo Perda']], use_container_width=True)
-            return
-
-        st.markdown("#### Configuração da Redistribuição do Malote")
-        
-        if filtro_dono_orig != "Todos os Corretores de Origem":
-            destinatarios_possiveis = [c for c in corretores_disponiveis if c != filtro_dono_orig]
         else:
-            destinatarios_possiveis = corretores_disponiveis
-
-        if not destinatarios_possiveis:
-            st.warning("Não há corretores de destino disponíveis.")
-            return
-
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", destinatarios_possiveis, key="destinatario_novo_perdidos")
-
-        dados_filtrados = dados_base[dados_base['Corretor'] != novo_destinatario].copy()
-        total_disponivel = len(dados_filtrados)
-
-        with col_m2:
-            if total_disponivel > 0:
-                default_perd = min(10, total_disponivel)
-                widget_key_perd = f"num_perd_{novo_destinatario}_{total_disponivel}"
-                tamanho_malote = st.number_input(
-                    f"Quantidade no malote (Disponíveis: {total_disponivel}):",
-                    min_value=1,
-                    max_value=max(1, total_disponivel),
-                    value=max(1, default_perd),
-                    step=1,
-                    key=widget_key_perd
-                )
-                qtd_final_perd = max(1, min(int(tamanho_malote or 1), total_disponivel))
+            st.markdown("#### Configuração da Redistribuição do Malote")
+            
+            if filtro_dono_orig != "Todos os Corretores de Origem":
+                destinatarios_possiveis = [c for c in corretores_disponiveis if c != filtro_dono_orig]
             else:
-                st.write("**Disponíveis:** 0 leads livres")
-                qtd_final_perd = 0
+                destinatarios_possiveis = corretores_disponiveis
 
-        if total_disponivel == 0 or qtd_final_perd == 0:
-            st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
-            return
+            if not destinatarios_possiveis:
+                st.warning("Não há corretores de destino disponíveis.")
+            else:
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", destinatarios_possiveis, key="destinatario_novo_perdidos")
 
-        malote_atual = dados_filtrados.head(qtd_final_perd)
+                dados_filtrados = dados_base[dados_base['Corretor'] != novo_destinatario].copy()
+                total_disponivel = len(dados_filtrados)
 
-        hoje = datetime.datetime.now()
-        texto_whatsapp = f"*LISTA DE LEADS - RECUPERAÇÃO (TENTATIVAS SEM SUCESSO)*\n*Destinatário:* {novo_destinatario}\n*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
+                with col_m2:
+                    if total_disponivel > 0:
+                        default_perd = min(10, total_disponivel)
+                        widget_key_perd = f"num_perd_{novo_destinatario}_{total_disponivel}"
+                        tamanho_malote = st.number_input(
+                            f"Quantidade no malote (Disponíveis: {total_disponivel}):",
+                            min_value=1,
+                            max_value=max(1, total_disponivel),
+                            value=max(1, default_perd),
+                            step=1,
+                            key=widget_key_perd
+                        )
+                        qtd_final_perd = max(1, min(int(tamanho_malote or 1), total_disponivel))
+                    else:
+                        st.write("**Disponíveis:** 0 leads livres")
+                        qtd_final_perd = 0
 
-        leads_para_gravar = []
-        for _, r in malote_atual.iterrows():
-            texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
-            leads_para_gravar.append({
-                'lead_key': r['lead_key'], 
-                'nome': r['Nome Cliente'], 
-                'celular': r['Celular_Limpo'], 
-                'corretor_orig': r['Corretor'],
-                'etapa_atual': r['Etapa do Funil']
-            })
+                if total_disponivel > 0 and qtd_final_perd > 0:
+                    malote_atual = dados_filtrados.head(qtd_final_perd)
+                    hoje = datetime.datetime.now()
+                    texto_whatsapp = f"*LISTA DE LEADS - RECUPERAÇÃO (TENTATIVAS SEM SUCESSO)*\n*Destinatário:* {novo_destinatario}\n*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
 
-        st.markdown(f"#### Lista do Malote para **{novo_destinatario}**:")
-        render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
-        st.code(texto_whatsapp, language="text")
+                    leads_para_gravar = []
+                    for _, r in malote_atual.iterrows():
+                        texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
+                        leads_para_gravar.append({
+                            'lead_key': r['lead_key'], 
+                            'nome': r['Nome Cliente'], 
+                            'celular': r['Celular_Limpo'], 
+                            'corretor_orig': r['Corretor'],
+                            'etapa_atual': r['Etapa do Funil']
+                        })
 
-        if st.button(f"✅ Confirmar e Salvar Redistribuição no Google Sheets ({novo_destinatario})", key=f"btn_reg_perdidos_{novo_destinatario}", type="primary"):
-            with st.spinner("Salvando na planilha..."):
-                registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
-            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} gravados na nuvem e removidos da fila ativa.")
-            st.rerun()
+                    st.markdown(f"#### Lista do Malote para **{novo_destinatario}**:")
+                    render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
+                    st.code(texto_whatsapp, language="text")
 
-        st.markdown("#### Detalhes do Malote (Com Corretor Original)")
-        df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
-        st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
+                    if st.button(f"✅ Confirmar e Salvar Redistribuição no Google Sheets ({novo_destinatario})", key=f"btn_reg_perdidos_{novo_destinatario}", type="primary"):
+                        with st.spinner("Salvando na planilha..."):
+                            registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
+                        st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} gravados na nuvem e removidos da fila ativa.")
+                        st.rerun()
 
-    with aba1:
-        df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
-        renderizar_painel_corretor_fixo(df_1, "aba1", "Aguardando 1ª Interação")
+                    st.markdown("#### Detalhes do Malote (Com Corretor Original)")
+                    df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
+                    st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
+                else:
+                    st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    with aba2:
-        df_2 = df[df['Tipo_Lead'] == "2. Em Atendimento"]
-        renderizar_painel_corretor_fixo(df_2, "aba2", "Em Atendimento")
-
-    with aba3:
-        df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
-        renderizar_painel_perdidos(df_3)
-
-    # --- ABA 4: AUDITORIA VISUAL DE MALOTES ---
+    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (GOOGLE SHEETS) ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
         st.caption("Visão executiva do cumprimento de tarefas por cada corretor desde a entrega dos malotes.")
@@ -575,7 +611,7 @@ if arquivo_atual:
             else:
                 st.success(f"🎉 Excelente! **{corretor_selecionado}** já iniciou contato com 100% dos leads que foram entregues a ele(a).")
 
-    # --- ABA 5: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR - CORRIGIDO) ---
+    # --- ABA 6: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR) ---
     with aba5:
         st.subheader("Raio-X de Modificações por Corretor (Planilha Anterior vs. Atual)")
         st.caption("Descubra exatamente quais alterações de etapa, novos contatos e anotações cada corretor realizou no CRM entre os dois relatórios.")
@@ -592,7 +628,6 @@ if arquivo_atual:
             ]
             colunas_ant_presentes = [c for c in colunas_ant_selecao if c in df_ant.columns]
 
-            # Merge seguro aplicando sufixos de forma consistente
             df_comp = df.merge(
                 df_ant[colunas_ant_presentes], 
                 on='lead_key', 
@@ -600,7 +635,6 @@ if arquivo_atual:
                 suffixes=('_atual', '_anterior')
             )
 
-            # Normalização de nomes para garantir que todas as colunas existam independentemente dos sufixos gerados
             def extrair_coluna(df_in, prefixo):
                 if f"{prefixo}_atual" in df_in.columns:
                     return df_in[f"{prefixo}_atual"]
@@ -748,7 +782,6 @@ if arquivo_atual:
                         render_botao_copiar(msg_inercia, f"📋 Copiar Cobrança de Estagnados para {corretor_alvo_comp}")
                         st.code(msg_inercia, language="text")
 
-                # Montagem das colunas para visualização
                 df_feed_display = pd.DataFrame({
                     'Cliente': df_feed['Nome_Exibicao'],
                     'Celular': df_feed['Celular_Exibicao'],
@@ -763,7 +796,7 @@ if arquivo_atual:
 
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
-    # --- ABA 6: CANCELAR / BLOQUEAR LEADS ---
+    # --- ABA 7: CANCELAR / BLOQUEAR LEADS ---
     with aba6:
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
