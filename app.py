@@ -269,16 +269,37 @@ if arquivo_atual:
         df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
         renderizar_painel_perdidos(df_3)
 
-    # --- ABA 4: COMPARADOR ENTRE PLANILHAS ---
+    # --- ABA 4: COMPARADOR ENTRE PLANILHAS COM GUIA & LEGENDA ---
     with aba4:
         st.subheader("Análise Comparativa de Evolução da Equipe")
+        
+        # Bloco explicativo com a legenda detalhada
+        with st.expander("ℹ️ GUIA RÁPIDO: O que significa cada status de evolução?", expanded=True):
+            st.markdown("""
+            Esta tela compara a planilha anterior com a atual cruzando o telefone e data do lead:
+            
+            * 🚀 **Avançou de Etapa (1ª Interação -> Atendimento):**  
+              *O cliente respondeu!* O lead saiu do status de tentativa (*Em Tentativa / Lead na Base*) e foi para atendimento ativo (*Visita, Negociação, etc.*).
+              
+            * 📞 **Novo Contato Registrado:**  
+              *O corretor trabalhou o lead!* A fase ainda não mudou, mas a data do `Último Contato em` foi atualizada no CRM com nova ligação ou mensagem.
+              
+            * 🎯 **Recuperado com Sucesso:**  
+              *A redistribuição deu certo!* Lead que na planilha anterior estava arquivado como *Perdido* e agora foi resgatado para *Em Atendimento*.
+              
+            * ❌ **Marcado como Perdido:**  
+              *Descarte de carteira.* O lead estava ativo na planilha anterior e foi finalizado como perdido no período analisado.
+              
+            * ⚠️ **Sem Alteração no CRM:**  
+              *Lead estagnado.* Não houve alteração de fase e nenhuma nova data de contato foi registrada pelo corretor desde a última planilha. Ideal para cobrança.
+            """)
+
         if not arquivo_anterior:
-            st.info("Para ver a evolução, faça o upload do relatório anterior no campo **'2. Relatório Anterior'** na barra lateral.")
+            st.info("Para comparar, suba o relatório anterior no campo **'2. Relatório Anterior'** na barra lateral.")
         else:
             df_crm_ant = pd.read_excel(arquivo_anterior, sheet_name=0)
             df_ant = preparar_dataframe(df_crm_ant)
 
-            # Merge entre as duas bases pela lead_key
             df_comp = df.merge(
                 df_ant[['lead_key', 'Etapa do Funil', 'Último Contato em', 'Corretor']], 
                 on='lead_key', 
@@ -286,7 +307,6 @@ if arquivo_atual:
                 suffixes=('_atual', '_anterior')
             )
 
-            # Classificação de evolução do lead
             def diagnosticar_evolucao(row):
                 etapa_ant = str(row['Etapa do Funil_anterior']).strip()
                 etapa_atu = str(row['Etapa do Funil_atual']).strip()
@@ -314,9 +334,7 @@ if arquivo_atual:
             m4.metric("Perdidos no Período", len(df_comp[df_comp['Status_Evolucao'] == "Marcado como Perdido"]))
 
             st.markdown("---")
-            st.markdown("### Desempenho por Corretor")
-            
-            # Agrupamento por Corretor Atual
+            st.markdown("### Desempenho Consolidado por Corretor")
             resumo_corretores = df_comp.groupby(['Corretor_atual', 'Status_Evolucao']).size().unstack(fill_value=0)
             st.dataframe(resumo_corretores, use_container_width=True)
 
