@@ -59,14 +59,20 @@ def limpar_celular(val):
     digits = re.sub(r'\D', '', str(val))
     return digits[:-2] if digits.endswith('.0') else digits
 
-def classificar_tipo(etapa):
-    etapa_str = str(etapa).strip()
+def classificar_tipo(row):
+    etapa_str = str(row.get('Etapa do Funil', '')).strip()
+    motivo_perda = str(row.get('Motivo Perda', '')).strip()
+    
     if etapa_str in ['Em Tentativa', 'Lead na Base']:
         return "1. Aguardando 1ª Interação"
     elif etapa_str in ['Em Atendimento - Primeiras Informações', 'Em Atendimento - Aguardando Disponibilidade', 'Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']:
         return "2. Em Atendimento"
     elif etapa_str in ['Perdido', 'Visita Cancelada', 'Visita - Cliente Não Compareceu']:
-        return "3. Perdidos para Recuperação"
+        # Filtra apenas quem foi perdido por falta de resposta / sem sucesso no contato
+        if motivo_perda.lower() == "tentativas de contato sem sucesso":
+            return "3. Perdidos para Recuperação"
+        else:
+            return "Perdido (Outros Motivos)"
     return "Outros"
 
 st.title("Gestão de Prazos & Cobrança de Corretores")
@@ -79,9 +85,11 @@ if arquivo:
     df_crm['Celular_Limpo'] = df_crm['Celular Cliente'].apply(limpar_celular)
     df_crm['Recebido_Str'] = df_crm['Recebido em'].astype(str)
     df_crm['lead_key'] = df_crm['Celular_Limpo'] + "_" + df_crm['Recebido_Str']
-    df_crm['Tipo_Lead'] = df_crm['Etapa do Funil'].apply(classificar_tipo)
     df_crm['Descrição Último Contato'] = df_crm['Descrição Último Contato'].fillna("Sem descrição registrada")
     df_crm['Motivo Perda'] = df_crm['Motivo Perda'].fillna("Não informado")
+    
+    # Classificação com base no motivo da perda
+    df_crm['Tipo_Lead'] = df_crm.apply(classificar_tipo, axis=1)
 
     hoje = datetime.datetime.now()
     def calcular_dias(row):
@@ -118,16 +126,16 @@ if arquivo:
 
     df['Status_Cobranca'] = df['data_ultima_cobranca'].apply(lambda x: "Já Cobrado/Passado" if pd.notna(x) else "Nunca Cobrado")
 
-    # Lista de corretores ativos
+    # Lista de todos os corretores ativos
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
     aba1, aba2, aba3 = st.tabs([
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
-        "3. Perdidos para Redistribuição"
+        "3. Perdidos para Recuperação (Tentativas Sem Sucesso)"
     ])
 
-    # --- FUNÇÃO PARA ABAS 1 E 2 (COBRANÇA DIRETA DO DONO DO LEAD) ---
+    # --- FUNÇÃO PARA ABAS 1 E 2 ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
         
@@ -179,19 +187,18 @@ if arquivo:
             st.info(f"Nenhum lead pendente para **{corretor_alvo}** nos filtros selecionados.")
             return
 
-        # Controle de Malote
         tamanho_malote = st.number_input(
             f"Quantidade de leads para este malote (Disponíveis: {total_disponivel}):",
             min_value=1,
             max_value=total_disponivel,
             value=min(10, total_disponivel),
             step=1,
-            key=f"num_{chave_aba}"
+            key=f"num_{chave_aba}_{corretor_alvo}"
         )
 
         malote_atual = dados_filtrados.head(int(tamanho_malote))
 
-        # Texto do WhatsApp
+        # Montagem do texto
         texto_whatsapp = f"*LISTA DE LEADS - {titulo_aba.upper()}*\n"
         texto_whatsapp += f"*Destinatário:* {corretor_alvo}\n"
         texto_whatsapp += f"*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
@@ -206,9 +213,11 @@ if arquivo:
                 'corretor_orig': r['Corretor']
             })
 
-        st.text_area("Copie o texto para enviar no WhatsApp:", value=texto_whatsapp, height=180, key=f"txt_{chave_aba}")
+        st.markdown(f"#### Copie a lista abaixo para enviar para **{corretor_alvo}**:")
+        key_dinamica = f"txt_{chave_aba}_{corretor_alvo}_{len(malote_atual)}"
+        st.text_area("Texto formatado:", value=texto_whatsapp, height=180, key=key_dinamica)
 
-        if st.button(f"Registrar Envio do Malote para {corretor_alvo}", key=f"btn_{chave_aba}"):
+        if st.button(f"Registrar Envio do Malote para {corretor_alvo}", key=f"btn_{chave_aba}_{corretor_alvo}"):
             registrar_lote_enviado(leads_para_gravar, corretor_alvo, titulo_aba)
             st.success(f"Malote de {len(leads_para_gravar)} leads registrado como enviado para {corretor_alvo}!")
             st.rerun()
@@ -220,11 +229,11 @@ if arquivo:
         ]
         st.dataframe(malote_atual[colunas_tabela], use_container_width=True)
 
-    # --- FUNÇÃO PARA ABA 3: PERDIDOS & REDISTRIBUIÇÃO ---
+    # --- FUNÇÃO PARA ABA 3: PERDIDOS (SOMENTE TENTATIVAS SEM SUCESSO) ---
     def renderizar_painel_perdidos(df_perdidos):
-        st.subheader("Fila de Perdidos (Redistribuição para Novos Corretores)")
+        st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
+        st.caption("Leads que foram arquivados sem resposta do cliente e possuem maior potencial de conversão com um novo corretor.")
         
-        # Métricas gerais dos perdidos
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("0 a 3 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "0 a 3 dias"]))
         c2.metric("3 a 10 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "3 a 10 dias"]))
@@ -246,7 +255,6 @@ if arquivo:
                 key="cob_perdidos"
             )
         with col_f3:
-            # Filtro opcional para puxar perdidos de um corretor original específico ou todos
             donos_originais = ["Todos os Corretores de Origem"] + sorted([c for c in df_perdidos['Corretor'].dropna().unique() if str(c).strip() != ""])
             filtro_dono_orig = st.selectbox("Filtrar por Corretor Original (Dono do Lead):", donos_originais, key="orig_perdidos")
 
@@ -263,32 +271,31 @@ if arquivo:
 
         total_disponivel = len(dados_filtrados)
         if total_disponivel == 0:
-            st.info("Nenhum lead perdido encontrado para os filtros selecionados.")
+            st.info("Nenhum lead com 'Tentativas de contato sem sucesso' encontrado para os filtros selecionados.")
             return
 
         st.markdown("#### Configuração da Redistribuição do Malote")
         col_m1, col_m2 = st.columns(2)
         with col_m1:
+            novo_destinatario = st.selectbox(
+                "Para qual NOVO corretor você enviará esse malote?", 
+                corretores_disponiveis, 
+                key="destinatario_novo_perdidos"
+            )
+        with col_m2:
             tamanho_malote = st.number_input(
                 f"Quantidade de leads neste malote (Disponíveis: {total_disponivel}):",
                 min_value=1,
                 max_value=total_disponivel,
                 value=min(10, total_disponivel),
                 step=1,
-                key="num_perdidos"
-            )
-        with col_m2:
-            # Corretor que VAI RECEBER o malote agora
-            novo_destinatario = st.selectbox(
-                "Para qual NOVO corretor você enviará esse malote?", 
-                corretores_disponiveis, 
-                key="destinatario_novo_perdidos"
+                key=f"num_perdidos_{novo_destinatario}"
             )
 
         malote_atual = dados_filtrados.head(int(tamanho_malote))
 
-        # Texto do WhatsApp apontando corretamente para o novo destinatário
-        texto_whatsapp = f"*LISTA DE LEADS - RECUPERAÇÃO DE PERDIDOS*\n"
+        # Texto do WhatsApp
+        texto_whatsapp = f"*LISTA DE LEADS - RECUPERAÇÃO (TENTATIVAS SEM SUCESSO)*\n"
         texto_whatsapp += f"*Destinatário:* {novo_destinatario}\n"
         texto_whatsapp += f"*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
 
@@ -302,15 +309,16 @@ if arquivo:
                 'corretor_orig': r['Corretor']
             })
 
-        st.text_area("Copie o texto para enviar ao corretor de destino:", value=texto_whatsapp, height=180, key="txt_perdidos")
+        st.markdown(f"#### Copie a lista abaixo para enviar para **{novo_destinatario}**:")
+        key_dinamica_perdidos = f"txt_perdidos_{novo_destinatario}_{len(malote_atual)}"
+        st.text_area("Texto formatado:", value=texto_whatsapp, height=180, key=key_dinamica_perdidos)
 
-        if st.button(f"Registrar Redistribuição do Malote para {novo_destinatario}", key="btn_perdidos"):
+        if st.button(f"Registrar Redistribuição do Malote para {novo_destinatario}", key=f"btn_perdidos_{novo_destinatario}"):
             registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
             st.success(f"Malote de {len(leads_para_gravar)} leads registrado como redistribuído para {novo_destinatario}!")
             st.rerun()
 
-        # Tabela com o Corretor Original bem evidente
-        st.markdown("#### Detalhes do Malote (Com Corretor Original e Motivo da Perda)")
+        st.markdown("#### Detalhes do Malote (Com Corretor Original)")
         df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
         colunas_tabela = [
             'Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 
