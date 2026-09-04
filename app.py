@@ -1,8 +1,10 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import sqlite3
 import datetime
 import re
+import json
 
 st.set_page_config(page_title="Gestão de Retrabalho Comercial", layout="wide")
 
@@ -86,6 +88,20 @@ def get_leads_bloqueados():
     df_bloq = pd.read_sql_query("SELECT * FROM leads_bloqueados", conn)
     conn.close()
     return df_bloq
+
+# Função para copiar direto para a área de transferência do usuário
+def copiar_para_clipboard(texto):
+    texto_json = json.dumps(texto)
+    js = f"""
+    <script>
+    navigator.clipboard.writeText({texto_json}).then(function() {{
+        console.log('Texto copiado com sucesso');
+    }}).catch(function(err) {{
+        console.error('Erro ao copiar: ', err);
+    }});
+    </script>
+    """
+    components.html(js, height=0, width=0)
 
 # --- PROCESSAMENTO DO EXCEL ---
 def limpar_celular(val):
@@ -222,13 +238,15 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        st.markdown(f"#### Lista para copiar e enviar para **{corretor_alvo}**:")
-        st.caption("Passe o cursor sobre o bloco abaixo e clique no ícone de copiar no canto superior direito:")
-        st.code(texto_whatsapp, language="text")
+        # Prévia do texto que será enviado
+        with st.expander("👁️ Ver prévia da mensagem gerada:", expanded=True):
+            st.text(texto_whatsapp)
 
-        if st.button(f"Registrar Envio do Malote para {corretor_alvo}", key=f"btn_{chave_aba}_{corretor_alvo}"):
+        # BOTÃO ÚNICO: COPIA E REGISTRA AO MESMO TEMPO
+        if st.button(f"📋 Copiar Lista ({len(leads_para_gravar)} leads) e Registrar Envio para {corretor_alvo}", key=f"btn_copiar_reg_{chave_aba}_{corretor_alvo}", type="primary"):
+            copiar_para_clipboard(texto_whatsapp)
             registrar_lote_enviado(leads_para_gravar, corretor_alvo, titulo_aba)
-            st.success(f"Malote de {len(leads_para_gravar)} leads registrado como enviado para {corretor_alvo}!")
+            st.success(f"✅ Lista copiada para sua área de transferência e registrada para {corretor_alvo}! Basta colar (Ctrl+V) no WhatsApp.")
             st.rerun()
 
         st.markdown("#### Detalhamento dos Leads Deste Malote")
@@ -237,7 +255,7 @@ if arquivo_atual:
     # --- ABA 3: PERDIDOS ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
-        st.caption("Leads bloqueados ou que compraram de concorrentes não aparecem nesta fila.")
+        st.caption("Leads arquivados sem resposta. O clique no botão copia a mensagem e remove os leads da fila imediatamente.")
         
         df_perdidos_ativos = df_perdidos[~df_perdidos['Lead_Bloqueado']].copy()
 
@@ -312,13 +330,15 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        st.markdown(f"#### Lista para copiar e enviar para **{novo_destinatario}**:")
-        st.caption("Passe o cursor sobre o bloco abaixo e clique no ícone de copiar no canto superior direito:")
-        st.code(texto_whatsapp, language="text")
+        # Prévia
+        with st.expander("👁️ Ver prévia da mensagem gerada:", expanded=True):
+            st.text(texto_whatsapp)
 
-        if st.button(f"Registrar Redistribuição do Malote para {novo_destinatario}", key=f"btn_perdidos_{novo_destinatario}"):
+        # BOTÃO ÚNICO: COPIA E REGISTRA REDISTRIBUIÇÃO
+        if st.button(f"📋 Copiar Lista ({len(leads_para_gravar)} leads) e Registrar para {novo_destinatario}", key=f"btn_copiar_reg_perdidos_{novo_destinatario}", type="primary"):
+            copiar_para_clipboard(texto_whatsapp)
             registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
-            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e removidos da fila ativa.")
+            st.success(f"✅ Lista copiada e redistribuição gravada para {novo_destinatario}! Os leads saíram da fila pendente.")
             st.rerun()
 
         st.markdown("#### Detalhes do Malote (Com Corretor Original)")
@@ -406,7 +426,7 @@ if arquivo_atual:
             ]
             st.dataframe(df_comp_exibir[colunas_comp], use_container_width=True)
 
-    # --- ABA 5: CANCELAR / BLOQUEAR LEADS (CORRIGIDA) ---
+    # --- ABA 5: CANCELAR / BLOQUEAR LEADS ---
     with aba5:
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
@@ -416,8 +436,6 @@ if arquivo_atual:
         with col_b1:
             st.markdown("#### Bloquear Novo Lead")
             busca_cliente = st.text_input("Buscar por Nome ou Telefone na base atual:")
-            
-            # Inicialização segura como DataFrame
             leads_encontrados = pd.DataFrame()
             if busca_cliente.strip():
                 leads_encontrados = df[
