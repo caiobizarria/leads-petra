@@ -22,6 +22,7 @@ def init_db():
             corretor_cobrado TEXT,
             corretor_original TEXT,
             tipo_lead TEXT,
+            etapa_ao_enviar TEXT,
             data_envio TEXT,
             total_cobrancas INTEGER DEFAULT 1
         )
@@ -45,20 +46,21 @@ def registrar_lote_enviado(leads_para_gravar, corretor_destino, tipo_lead):
     agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     for l in leads_para_gravar:
         c.execute('''
-            INSERT INTO controle_envios (lead_key, nome, celular, corretor_cobrado, corretor_original, tipo_lead, data_envio, total_cobrancas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO controle_envios (lead_key, nome, celular, corretor_cobrado, corretor_original, tipo_lead, etapa_ao_enviar, data_envio, total_cobrancas)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(lead_key) DO UPDATE SET
                 corretor_cobrado = ?,
                 data_envio = ?,
                 tipo_lead = ?,
+                etapa_ao_enviar = ?,
                 total_cobrancas = total_cobrancas + 1
-        ''', (l['lead_key'], l['nome'], l['celular'], corretor_destino, l.get('corretor_orig', ''), tipo_lead, agora, corretor_destino, agora, tipo_lead))
+        ''', (l['lead_key'], l['nome'], l['celular'], corretor_destino, l.get('corretor_orig', ''), tipo_lead, l.get('etapa_atual', ''), agora, corretor_destino, agora, tipo_lead, l.get('etapa_atual', '')))
     conn.commit()
     conn.close()
 
 def get_historico():
     conn = sqlite3.connect(DB_FILE)
-    df_hist = pd.read_sql_query("SELECT lead_key, corretor_cobrado, data_envio as data_ultima_cobranca, total_cobrancas FROM controle_envios", conn)
+    df_hist = pd.read_sql_query("SELECT lead_key, corretor_cobrado, corretor_original, tipo_lead as tipo_lead_envio, etapa_ao_enviar, data_envio as data_ultima_cobranca, total_cobrancas FROM controle_envios", conn)
     conn.close()
     return df_hist
 
@@ -89,7 +91,6 @@ def get_leads_bloqueados():
     conn.close()
     return df_bloq
 
-# Componente HTML com botão nativo com permissão de Clipboard direto no navegador
 def render_botao_copiar(texto_para_copiar, rotulo="📋 Copiar Lista para o WhatsApp"):
     texto_escapado = json.dumps(texto_para_copiar)
     html_code = f"""
@@ -226,6 +227,9 @@ if arquivo_atual:
         df = df.merge(df_hist, on='lead_key', how='left')
     else:
         df['corretor_cobrado'] = None
+        df['corretor_original'] = None
+        df['tipo_lead_envio'] = None
+        df['etapa_ao_enviar'] = None
         df['data_ultima_cobranca'] = None
         df['total_cobrancas'] = 0
 
@@ -237,12 +241,13 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    aba1, aba2, aba3, aba4, aba5 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
         "3. Perdidos para Recuperação",
-        "4. Comparador de Evolução",
-        "5. Bloqueio de Leads (Blacklist)"
+        "4. Auditoria de Malotes Enviados",
+        "5. Comparador de Planilhas",
+        "6. Bloqueio de Leads"
     ])
 
     # --- ABAS 1 E 2 ---
@@ -291,16 +296,18 @@ if arquivo_atual:
         leads_para_gravar = []
         for _, r in malote_atual.iterrows():
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
-            leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
+            leads_para_gravar.append({
+                'lead_key': r['lead_key'], 
+                'nome': r['Nome Cliente'], 
+                'celular': r['Celular_Limpo'], 
+                'corretor_orig': r['Corretor'],
+                'etapa_atual': r['Etapa do Funil']
+            })
 
         st.markdown(f"#### Lista do Malote para **{corretor_alvo}**:")
-        # Botão de cópia direta via JavaScript
         render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
-        
-        # Bloco visível como alternativa com ícone no canto superior
         st.code(texto_whatsapp, language="text")
 
-        # Botão dedicado para salvar o envio e avançar a fila
         if st.button(f"✅ Confirmar e Registrar Envio do Malote para {corretor_alvo}", key=f"btn_reg_{chave_aba}_{corretor_alvo}", type="primary"):
             registrar_lote_enviado(leads_para_gravar, corretor_alvo, titulo_aba)
             st.success(f"Malote de {len(leads_para_gravar)} leads registrado como enviado para {corretor_alvo}!")
@@ -385,7 +392,13 @@ if arquivo_atual:
         leads_para_gravar = []
         for _, r in malote_atual.iterrows():
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
-            leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
+            leads_para_gravar.append({
+                'lead_key': r['lead_key'], 
+                'nome': r['Nome Cliente'], 
+                'celular': r['Celular_Limpo'], 
+                'corretor_orig': r['Corretor'],
+                'etapa_atual': r['Etapa do Funil']
+            })
 
         st.markdown(f"#### Lista do Malote para **{novo_destinatario}**:")
         render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
@@ -412,22 +425,96 @@ if arquivo_atual:
         df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
         renderizar_painel_perdidos(df_3)
 
-    # --- ABA 4: COMPARADOR ENTRE PLANILHAS ---
+    # --- ABA 4: AUDITORIA DE MALOTES ENVIADOS (NOVA) ---
     with aba4:
-        st.subheader("Análise Comparativa de Evolução da Equipe")
+        st.subheader("Auditoria de Malotes Enviados (Evolução no CRM pós-disparo)")
+        st.caption("Esta tela audita se os corretores realmente entraram em contato com os leads que você enviou a eles no WhatsApp.")
+
+        df_enviados = df[df['Status_Cobranca'] == "Já Cobrado/Passado"].copy()
+
+        if df_enviados.empty:
+            st.info("Você ainda não registrou nenhum malote de cobrança ou redistribuição no aplicativo.")
+        else:
+            # Lógica que diagnostica se o corretor mexeu no lead pós-envio
+            def avaliar_atendimento_pos_envio(row):
+                data_envio_str = str(row.get('data_ultima_cobranca', '')).strip()
+                data_contato_crm = str(row.get('Último Contato em', '')).strip()
+                etapa_crm_agora = str(row.get('Etapa do Funil', '')).strip()
+                etapa_original_envio = str(row.get('etapa_ao_enviar', '')).strip()
+
+                interagiu = False
+                try:
+                    d_envio = pd.to_datetime(data_envio_str, format="%d/%m/%Y %H:%M")
+                    if data_contato_crm != "":
+                        d_contato = pd.to_datetime(data_contato_crm, format="%d/%m/%Y %H:%M")
+                        if d_contato >= d_envio:
+                            interagiu = True
+                except:
+                    pass
+
+                # Se a etapa mudou para melhor
+                if etapa_crm_agora != etapa_original_envio and etapa_crm_agora not in ['Em Tentativa', 'Lead na Base', 'Perdido']:
+                    return "Convertido / Avançou de Etapa 🎯"
+                elif interagiu:
+                    return "Trabalhado (Novo Contato no CRM) ✅"
+                else:
+                    return "Ignorado / Sem Contato Registrado ⚠️"
+
+            df_enviados['Status_Auditoria'] = df_enviados.apply(avaliar_atendimento_pos_envio, axis=1)
+
+            # Cartões de Métricas
+            total_env = len(df_enviados)
+            trabalhados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("✅|🎯")])
+            ignorados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("⚠️")])
+            taxa_trabalho = (trabalhados / total_env * 100) if total_env > 0 else 0
+
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Total de Leads Enviados", total_env)
+            a2.metric("Trabalhados pelos Corretores", trabalhados)
+            a3.metric("Ignorados / Sem Contato", ignorados)
+            a4.metric("Taxa de Execução", f"{taxa_trabalho:.1f}%")
+
+            st.markdown("---")
+            st.markdown("### Placar de Execução por Corretor Cobrado")
+            resumo_execucao = df_enviados.groupby(['corretor_cobrado', 'Status_Auditoria']).size().unstack(fill_value=0)
+            st.dataframe(resumo_execucao, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("### Detalhamento por Corretor")
+            corretor_auditado = st.selectbox("Escolha o corretor para ver o status dos leads enviados:", ["Todos"] + sorted(df_enviados['corretor_cobrado'].dropna().unique().tolist()), key="sel_auditoria_corretor")
+
+            filtro_auditoria_status = st.selectbox("Filtrar por Status de Execução:", ["Apenas Ignorados / Sem Contato", "Todos", "Apenas Trabalhados / Convertidos"], key="sel_auditoria_status")
+
+            df_auditoria_view = df_enviados if corretor_auditado == "Todos" else df_enviados[df_enviados['corretor_cobrado'] == corretor_auditado]
+
+            if filtro_auditoria_status == "Apenas Ignorados / Sem Contato":
+                df_auditoria_view = df_auditoria_view[df_auditoria_view['Status_Auditoria'].str.contains("⚠️")]
+            elif filtro_auditoria_status == "Apenas Trabalhados / Convertidos":
+                df_auditoria_view = df_auditoria_view[df_auditoria_view['Status_Auditoria'].str.contains("✅|🎯")]
+
+            colunas_auditoria = [
+                'Nome Cliente', 'Celular_Limpo', 'corretor_cobrado', 'tipo_lead_envio',
+                'Status_Auditoria', 'data_ultima_cobranca', 'Último Contato em', 
+                'Etapa do Funil', 'Descrição Último Contato'
+            ]
+            st.dataframe(df_auditoria_view[colunas_auditoria], use_container_width=True)
+
+    # --- ABA 5: COMPARADOR ENTRE PLANILHAS ---
+    with aba5:
+        st.subheader("Análise Comparativa Geral (Planilha Anterior vs. Atual)")
         with st.expander("ℹ️ GUIA RÁPIDO: O que significa cada status de evolução?", expanded=True):
             st.markdown("""
             Esta tela compara a planilha anterior com a atual cruzando o telefone e data do lead:
             
-            * 🚀 **Avançou de Etapa (1ª Interação -> Atendimento):** O lead saiu do status de tentativa (*Em Tentativa / Lead na Base*) e foi para atendimento ativo.
-            * 📞 **Novo Contato Registrado:** A data do `Último Contato em` foi atualizada no CRM com nova ligação ou mensagem.
-            * 🎯 **Recuperado com Sucesso:** Lead que estava arquivado como *Perdido* e foi resgatado para *Em Atendimento*.
-            * ❌ **Marcado como Perdido:** O lead foi finalizado como perdido no período analisado.
+            * 🚀 **Avançou de Etapa (1ª Interação -> Atendimento):** O lead saiu de tentativa para atendimento ativo.
+            * 📞 **Novo Contato Registrado:** A data do `Último Contato em` foi atualizada no CRM.
+            * 🎯 **Recuperado com Sucesso:** Lead que estava arquivado como *Perdido* e foi resgatado.
+            * ❌ **Marcado como Perdido:** O lead foi finalizado como perdido no período.
             * ⚠️ **Sem Alteração no CRM:** Nenhuma alteração de fase ou contato registrado desde a última planilha.
             """)
 
         if not arquivo_anterior:
-            st.info("Para comparar, suba o relatório anterior no campo **'2. Relatório Anterior'** na barra lateral.")
+            st.info("Para comparar duas versões de relatórios do CRM, suba o relatório no campo **'2. Relatório Anterior'** na barra lateral.")
         else:
             df_crm_ant = pd.read_excel(arquivo_anterior, sheet_name=0)
             df_ant = preparar_dataframe(df_crm_ant)
@@ -481,8 +568,8 @@ if arquivo_atual:
             ]
             st.dataframe(df_comp_exibir[colunas_comp], use_container_width=True)
 
-    # --- ABA 5: CANCELAR / BLOQUEAR LEADS ---
-    with aba5:
+    # --- ABA 6: CANCELAR / BLOQUEAR LEADS ---
+    with aba6:
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
 
