@@ -256,7 +256,7 @@ if arquivo_atual:
         "2. Em Atendimento", 
         "3. Perdidos para Recuperação",
         "4. Auditoria de Malotes (Google Sheets)",
-        "5. Comparador de Planilhas",
+        "5. Comparador de Planilhas (Raio-X)",
         "6. Bloqueio de Leads"
     ])
 
@@ -459,7 +459,7 @@ if arquivo_atual:
         df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
         renderizar_painel_perdidos(df_3)
 
-    # --- ABA 4: AUDITORIA VISUAL DE MALOTES (NOVO DASHBOARD) ---
+    # --- ABA 4: AUDITORIA VISUAL DE MALOTES ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
         st.caption("Visão executiva do cumprimento de tarefas por cada corretor desde a entrega dos malotes.")
@@ -494,7 +494,6 @@ if arquivo_atual:
 
             df_enviados['Status_Auditoria'] = df_enviados.apply(avaliar_atendimento_pos_envio, axis=1)
 
-            # Métricas Globais
             total_env = len(df_enviados)
             trabalhados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("✅|🎯")])
             ignorados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("⚠️")])
@@ -507,11 +506,8 @@ if arquivo_atual:
             m4.metric("Aproveitamento Geral", f"{taxa_trabalho:.1f}%")
 
             st.markdown("---")
-
-            # 1. TABELA COMPARATIVA VISUAL (RANKING POR CORRETOR COM SEMÁFORO)
-            st.markdown("### 🏆 Ranking Comparativo de Execução por Corretor")
+            st.markdown("### 🏆 Ranking de Execução de Malotes por Corretor")
             
-            # Agregação por Corretor
             corretores_grp = []
             for corr, grp in df_enviados.groupby('corretor_cobrado'):
                 total_c = len(grp)
@@ -519,11 +515,9 @@ if arquivo_atual:
                 ign_c = len(grp[grp['Status_Auditoria'].str.contains("⚠️")])
                 taxa_c = (trab_c / total_c * 100) if total_c > 0 else 0
                 
-                # Barra de progresso visual em texto
                 blocos_cheios = int(taxa_c // 10)
                 barra_visual = "█" * blocos_cheios + "░" * (10 - blocos_cheios)
                 
-                # Classificação de Semáforo
                 if taxa_c >= 70:
                     status_semaforo = "🟢 Excelente"
                 elif taxa_c >= 40:
@@ -544,14 +538,11 @@ if arquivo_atual:
             df_ranking = pd.DataFrame(corretores_grp).sort_values(by='Ignorados / Parados', ascending=False)
             st.dataframe(df_ranking[['Corretor', 'Status Operacional', 'Progresso', 'Leads Entregues', 'Trabalhados', 'Ignorados / Parados', 'Taxa de Atendimento']], use_container_width=True, hide_index=True)
 
-            # 2. GRÁFICO COMPARATIVO DIRETO
             st.markdown("### 📊 Gráfico de Volume: Trabalhados vs. Ignorados")
             df_chart_dados = df_enviados.groupby(['corretor_cobrado', 'Status_Auditoria']).size().unstack(fill_value=0)
             st.bar_chart(df_chart_dados)
 
             st.markdown("---")
-
-            # 3. DIAGNÓSTICO INDIVIDUAL (1 a 1) E COBRANÇA REINCIDENTE
             st.markdown("### 🔍 Diagnóstico Individual e Cobrança Direta")
             corretor_selecionado = st.selectbox(
                 "Selecione um Corretor para auditar e cobrar pendências:",
@@ -570,7 +561,6 @@ if arquivo_atual:
             if not pendentes_1a1.empty:
                 st.warning(f"**{corretor_selecionado}** possui **{len(pendentes_1a1)} leads** entregues que ainda não têm registro de contato no CRM.")
                 
-                # Gera mensagem de cobrança individual
                 msg_cobranca = f"Olá, *{corretor_selecionado}*! Tudo bem?\n\nConsta aqui no nosso acompanhamento que você recebeu uma lista de leads para retrabalho recentemente, mas estes contatos ainda constam sem nova interação registrada no sistema:\n\n"
                 for _, r in pendentes_1a1.head(15).iterrows():
                     msg_cobranca += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
@@ -585,74 +575,190 @@ if arquivo_atual:
             else:
                 st.success(f"🎉 Excelente! **{corretor_selecionado}** já iniciou contato com 100% dos leads que foram entregues a ele(a).")
 
-    # --- ABA 5: COMPARADOR ENTRE PLANILHAS (VISÃO EXECUTIVA) ---
+    # --- ABA 5: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR) ---
     with aba5:
-        st.subheader("Análise Comparativa Geral (Planilha Anterior vs. Atual)")
-        with st.expander("ℹ️ GUIA RÁPIDO: O que significa cada status de evolução?", expanded=False):
-            st.markdown("""
-            Esta tela compara a planilha anterior com a atual cruzando o telefone e data do lead:
-            
-            * 🚀 **Avançou de Etapa:** O lead saiu de tentativa para atendimento ativo.
-            * 📞 **Novo Contato Registrado:** A data do `Último Contato em` foi atualizada no CRM.
-            * 🎯 **Recuperado com Sucesso:** Lead que estava arquivado como *Perdido* e foi resgatado.
-            * ❌ **Marcado como Perdido:** O lead foi finalizado como perdido no período.
-            * ⚠️ **Sem Alteração no CRM:** Nenhuma alteração de fase ou contato registrado desde a última planilha.
-            """)
+        st.subheader("Raio-X de Modificações por Corretor (Planilha Anterior vs. Atual)")
+        st.caption("Descubra exatamente quais alterações de etapa, novos contatos e anotações cada corretor realizou no CRM entre os dois relatórios.")
 
         if not arquivo_anterior:
-            st.info("Para comparar duas versões de relatórios do CRM, suba o relatório no campo **'2. Relatório Anterior'** na barra lateral.")
+            st.info("👉 Para visualizar as alterações detalhadas da equipe, faça o upload do relatório anterior no campo **'2. Relatório Anterior'** na barra lateral.")
         else:
             df_crm_ant = pd.read_excel(arquivo_anterior, sheet_name=0)
             df_ant = preparar_dataframe(df_crm_ant)
 
+            # Cruzamento completo das duas planilhas
             df_comp = df.merge(
-                df_ant[['lead_key', 'Etapa do Funil', 'Último Contato em', 'Corretor']], 
+                df_ant[['lead_key', 'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Corretor', 'Motivo Perda']], 
                 on='lead_key', 
                 how='inner', 
                 suffixes=('_atual', '_anterior')
             )
 
-            def diagnosticar_evolucao(row):
+            # Diagnóstico minucioso campo a campo
+            def auditar_alteracao_detalhada(row):
                 etapa_ant = str(row['Etapa do Funil_anterior']).strip()
                 etapa_atu = str(row['Etapa do Funil_atual']).strip()
                 contato_ant = str(row['Último Contato em_anterior']).strip()
                 contato_atu = str(row['Último Contato em_atual']).strip()
+                desc_ant = str(row['Descrição Último Contato_anterior']).strip()
+                desc_atu = str(row['Descrição Último Contato_atual']).strip()
+                corretor_ant = str(row['Corretor_anterior']).strip()
+                corretor_atu = str(row['Corretor_atual']).strip()
 
-                if etapa_ant in ['Em Tentativa', 'Lead na Base'] and etapa_atu not in ['Em Tentativa', 'Lead na Base', 'Perdido']:
-                    return "Avançou de Etapa (1ª Interação -> Atendimento)"
-                elif etapa_ant == 'Perdido' and etapa_atu != 'Perdido':
-                    return "Recuperado com Sucesso"
+                mudou_etapa = (etapa_ant != etapa_atu)
+                mudou_contato = (contato_atu != contato_ant and contato_atu != "")
+                mudou_desc = (desc_atu != desc_ant and desc_atu != "" and desc_atu != "Sem descrição registrada")
+                mudou_corretor = (corretor_ant != corretor_atu)
+
+                if etapa_ant == 'Perdido' and etapa_atu != 'Perdido':
+                    tipo = "🎯 Resgatado de Perdido"
                 elif etapa_atu == 'Perdido' and etapa_ant != 'Perdido':
-                    return "Marcado como Perdido"
-                elif contato_atu != contato_ant and contato_atu != "":
-                    return "Novo Contato Registrado"
+                    tipo = "❌ Arquivado como Perdido"
+                elif mudou_etapa:
+                    tipo = "🚀 Mudou de Etapa"
+                elif mudou_contato or mudou_desc:
+                    tipo = "📞 Novo Contato / Anotação"
+                elif mudou_corretor:
+                    tipo = "🔄 Troca de Corretor"
                 else:
-                    return "Sem Alteração no CRM"
+                    tipo = "💤 Estagnado (Sem Alteração)"
 
-            df_comp['Status_Evolucao'] = df_comp.apply(diagnosticar_evolucao, axis=1)
+                # Descrição textual da mudança ocorrida
+                detalhes = []
+                if mudou_etapa:
+                    detalhes.append(f"Etapa: '{etapa_ant}' ➔ '{etapa_atu}'")
+                if mudou_contato:
+                    detalhes.append(f"Novo contato em: {contato_atu}")
+                if mudou_desc:
+                    detalhes.append(f"Nova nota: \"{desc_atu}\"")
+                if mudou_corretor:
+                    detalhes.append(f"Dono anterior: {corretor_ant}")
 
-            st.markdown("### Resumo Geral de Movimentação")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Avançaram de Etapa", len(df_comp[df_comp['Status_Evolucao'].str.contains("Avançou")]))
-            m2.metric("Novos Contatos Realizados", len(df_comp[df_comp['Status_Evolucao'] == "Novo Contato Registrado"]))
-            m3.metric("Leads Recuperados", len(df_comp[df_comp['Status_Evolucao'] == "Recuperado com Sucesso"]))
-            m4.metric("Perdidos no Período", len(df_comp[df_comp['Status_Evolucao'] == "Marcado como Perdido"]))
+                resumo_txt = " | ".join(detalhes) if detalhes else "Nenhuma modificação registrada no CRM."
+                return pd.Series([tipo, resumo_txt, (tipo != "💤 Estagnado (Sem Alteração)")])
+
+            df_comp[['Tipo_Movimentacao', 'Resumo_Modificacao', 'Teve_Movimentacao']] = df_comp.apply(auditar_alteracao_detalhada, axis=1)
+
+            # Painel Geral de Resumo
+            total_leads_comparados = len(df_comp)
+            total_com_mov = len(df_comp[df_comp['Teve_Movimentacao']])
+            total_estagnados = len(df_comp[~df_comp['Teve_Movimentacao']])
+            taxa_global_mov = (total_com_mov / total_leads_comparados * 100) if total_leads_comparados > 0 else 0
+
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Leads Comparados", total_leads_comparados)
+            p2.metric("Com Alteração / Contato", total_com_mov)
+            p3.metric("Estagnados (Sem Ação)", total_estagnados, delta=f"-{total_estagnados}" if total_estagnados > 0 else "0", delta_color="inverse")
+            p4.metric("Índice de Atividade", f"{taxa_global_mov:.1f}%")
 
             st.markdown("---")
-            st.markdown("### Desempenho Consolidado por Corretor")
-            resumo_corretores = df_comp.groupby(['Corretor_atual', 'Status_Evolucao']).size().unstack(fill_value=0)
-            st.dataframe(resumo_corretores, use_container_width=True)
 
-            st.markdown("### Filtrar e Auditar Leads")
-            corretor_filtro_comp = st.selectbox("Selecione um Corretor para auditar:", ["Todos"] + corretores_disponiveis, key="filtro_comp_corretor")
-            df_comp_exibir = df_comp if corretor_filtro_comp == "Todos" else df_comp[df_comp['Corretor_atual'] == corretor_filtro_comp]
+            # 1. RANKING DE ATIVIDADE POR CORRETOR
+            st.markdown("### 🏆 Placar de Produtividade por Corretor (Quem Mais Mexeu no CRM)")
+            
+            resumo_corretores_lista = []
+            for c_nome, c_grp in df_comp.groupby('Corretor_atual'):
+                c_total = len(c_grp)
+                c_mov = len(c_grp[c_grp['Teve_Movimentacao']])
+                c_parados = len(c_grp[~c_grp['Teve_Movimentacao']])
+                c_avancou = len(c_grp[c_grp['Tipo_Movimentacao'].str.contains("🚀|🎯")])
+                c_contatos = len(c_grp[c_grp['Tipo_Movimentacao'].str.contains("📞")])
+                c_perdidos = len(c_grp[c_grp['Tipo_Movimentacao'].str.contains("❌")])
+                c_taxa = (c_mov / c_total * 100) if c_total > 0 else 0
 
-            colunas_comp = [
-                'Nome Cliente', 'Celular_Limpo', 'Corretor_atual', 'Status_Evolucao',
-                'Etapa do Funil_anterior', 'Etapa do Funil_atual', 
-                'Último Contato em_anterior', 'Último Contato em_atual'
-            ]
-            st.dataframe(df_comp_exibir[colunas_comp], use_container_width=True)
+                blocos = int(c_taxa // 10)
+                c_barra = "█" * blocos + "░" * (10 - blocos)
+
+                if c_taxa >= 50:
+                    status_c = "🟢 Alta Atividade"
+                elif c_taxa >= 25:
+                    status_c = "🟡 Média Atividade"
+                else:
+                    status_c = "🔴 Inércia / Pouca Ação"
+
+                resumo_corretores_lista.append({
+                    'Corretor': c_nome,
+                    'Nível de Ação': status_c,
+                    'Atividade': f"{c_barra} ({c_taxa:.0f}%)",
+                    'Total Carteira': c_total,
+                    'Movimentados': c_mov,
+                    'Estagnados': c_parados,
+                    'Avanços de Etapa': c_avancou,
+                    'Novas Anotações': c_contatos,
+                    'Marcou Perdido': c_perdidos,
+                    'Taxa de Movimentação': f"{c_taxa:.1f}%"
+                })
+
+            df_resumo_corretores = pd.DataFrame(resumo_corretores_lista).sort_values(by='Movimentados', ascending=False)
+            st.dataframe(
+                df_resumo_corretores[['Corretor', 'Nível de Ação', 'Atividade', 'Total Carteira', 'Movimentados', 'Estagnados', 'Avanços de Etapa', 'Novas Anotações', 'Marcou Perdido', 'Taxa de Movimentação']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.markdown("---")
+
+            # 2. FEED DETALHADO DO CORRETOR
+            st.markdown("### 🔍 Raio-X Detalhado do Corretor (Feed de Ações)")
+            
+            col_f_c1, col_f_c2 = st.columns([1, 1])
+            with col_f_c1:
+                corretor_alvo_comp = st.selectbox(
+                    "Escolha o Corretor para ver exatamente o que ele mudou:",
+                    ["Todos os Corretores"] + sorted(df_comp['Corretor_atual'].dropna().unique().tolist()),
+                    key="sel_feed_corretor"
+                )
+            with col_f_c2:
+                filtro_tipo_mov = st.selectbox(
+                    "Filtrar tipo de ocorrência:",
+                    ["Apenas Leads que Mudaram (Ativos)", "Apenas Leads Estagnados (Sem Ação)", "Todos os Leads"],
+                    key="sel_feed_tipo"
+                )
+
+            df_feed = df_comp if corretor_alvo_comp == "Todos os Corretores" else df_comp[df_comp['Corretor_atual'] == corretor_alvo_comp]
+
+            if filtro_tipo_mov == "Apenas Leads que Mudaram (Ativos)":
+                df_feed = df_feed[df_feed['Teve_Movimentacao']]
+            elif filtro_tipo_mov == "Apenas Leads Estagnados (Sem Ação)":
+                df_feed = df_feed[~df_feed['Teve_Movimentacao']]
+
+            if df_feed.empty:
+                st.info("Nenhum lead encontrado com os filtros selecionados.")
+            else:
+                st.markdown(f"**Exibindo {len(df_feed)} leads:**")
+
+                # Se o usuário escolheu ver estagnados de um corretor específico, permite gerar cobrança de WhatsApp
+                if corretor_alvo_comp != "Todos os Corretores" and filtro_tipo_mov == "Apenas Leads Estagnados (Sem Ação)":
+                    msg_inercia = f"Olá, *{corretor_alvo_comp}*! Tudo bem?\n\nIdentificamos no CRM que estes leads da sua carteira continuam sem nenhuma atualização de contato recente:\n\n"
+                    for _, r_in in df_feed.head(15).iterrows():
+                        msg_inercia += f"• *{r_in['Nome Cliente_atual']}* - {r_in['Celular_Limpo']}\n"
+                    msg_inercia += "\nConsegue fazer uma rodada de contatos neles hoje e atualizar o CRM? Obrigado!"
+
+                    with st.expander("👁️ Mensagem pronta para cobrar este corretor sobre os estagnados:", expanded=False):
+                        render_botao_copiar(msg_inercia, f"📋 Copiar Cobrança de Estagnados para {corretor_alvo_comp}")
+                        st.code(msg_inercia, language="text")
+
+                # Tabela de Auditoria Visual
+                colunas_feed_view = [
+                    'Nome Cliente_atual', 'Celular_Limpo', 'Corretor_atual',
+                    'Tipo_Movimentacao', 'Resumo_Modificacao',
+                    'Etapa do Funil_anterior', 'Etapa do Funil_atual',
+                    'Descrição Último Contato_atual', 'Último Contato em_atual'
+                ]
+                
+                df_feed_display = df_feed[colunas_feed_view].rename(columns={
+                    'Nome Cliente_atual': 'Cliente',
+                    'Celular_Limpo': 'Celular',
+                    'Corretor_atual': 'Corretor',
+                    'Tipo_Movimentacao': 'Diagnóstico',
+                    'Resumo_Modificacao': 'O Que Foi Modificado',
+                    'Etapa do Funil_anterior': 'Etapa Anterior',
+                    'Etapa do Funil_atual': 'Etapa Atual',
+                    'Descrição Último Contato_atual': 'Última Anotação no CRM',
+                    'Último Contato em_atual': 'Data do Último Contato'
+                })
+
+                st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
     # --- ABA 6: CANCELAR / BLOQUEAR LEADS ---
     with aba6:
