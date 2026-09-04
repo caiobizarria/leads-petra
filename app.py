@@ -297,8 +297,22 @@ if arquivo_atual:
             st.info(f"Nenhum lead pendente para **{corretor_alvo}** nos filtros selecionados.")
             return
 
-        tamanho_malote = st.number_input(f"Quantidade de leads para este malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_{chave_aba}_{corretor_alvo}")
-        malote_atual = dados_filtrados.head(int(tamanho_malote))
+        # Controle seguro de quantidade: evita erros ao clicar em diminuir
+        default_val = min(10, total_disponivel)
+        widget_key = f"num_{chave_aba}_{corretor_alvo}_{total_disponivel}"
+        
+        tamanho_malote = st.number_input(
+            f"Quantidade de leads para este malote (Disponíveis: {total_disponivel}):",
+            min_value=1,
+            max_value=max(1, total_disponivel),
+            value=max(1, default_val),
+            step=1,
+            key=widget_key
+        )
+
+        # Garante valor inteiro e válido
+        qtd_final = max(1, min(int(tamanho_malote or 1), total_disponivel))
+        malote_atual = dados_filtrados.head(qtd_final)
 
         hoje = datetime.datetime.now()
         texto_whatsapp = f"*LISTA DE LEADS - {titulo_aba.upper()}*\n*Destinatário:* {corretor_alvo}\n*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
@@ -386,16 +400,26 @@ if arquivo_atual:
 
         with col_m2:
             if total_disponivel > 0:
-                tamanho_malote = st.number_input(f"Quantidade no malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_perdidos_{novo_destinatario}")
+                default_perd = min(10, total_disponivel)
+                widget_key_perd = f"num_perd_{novo_destinatario}_{total_disponivel}"
+                tamanho_malote = st.number_input(
+                    f"Quantidade no malote (Disponíveis: {total_disponivel}):",
+                    min_value=1,
+                    max_value=max(1, total_disponivel),
+                    value=max(1, default_perd),
+                    step=1,
+                    key=widget_key_perd
+                )
+                qtd_final_perd = max(1, min(int(tamanho_malote or 1), total_disponivel))
             else:
                 st.write("**Disponíveis:** 0 leads livres")
-                tamanho_malote = 0
+                qtd_final_perd = 0
 
-        if total_disponivel == 0:
+        if total_disponivel == 0 or qtd_final_perd == 0:
             st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
             return
 
-        malote_atual = dados_filtrados.head(int(tamanho_malote))
+        malote_atual = dados_filtrados.head(qtd_final_perd)
 
         hoje = datetime.datetime.now()
         texto_whatsapp = f"*LISTA DE LEADS - RECUPERAÇÃO (TENTATIVAS SEM SUCESSO)*\n*Destinatário:* {novo_destinatario}\n*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
