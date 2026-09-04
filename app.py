@@ -191,65 +191,74 @@ if arquivo_atual:
         st.markdown("#### Detalhamento dos Leads Deste Malote")
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    # --- ABA 3: PERDIDOS (COM TRAVA DE CORRETOR DE ORIGEM) ---
+    # --- ABA 3: PERDIDOS (COM TRAVA ANTIDUPLICIDADE ABSOLUTA) ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
-        st.caption("Leads que foram arquivados sem resposta do cliente e possuem maior potencial de conversão com um novo corretor.")
+        st.caption("Leads arquivados sem resposta. Quando você redistribui um malote, esses leads saem da fila para evitar qualquer duplicidade.")
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("0 a 3 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "0 a 3 dias"]))
         c2.metric("3 a 10 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "3 a 10 dias"]))
         c3.metric("Mais de 10 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "Mais de 10 dias"]))
-        c4.metric("Já Redistribuídos", len(df_perdidos[df_perdidos['Status_Cobranca'] == "Já Cobrado/Passado"]))
+        c4.metric("Já Redistribuídos (Histórico)", len(df_perdidos[df_perdidos['Status_Cobranca'] == "Já Cobrado/Passado"]))
 
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
             filtro_faixa = st.multiselect("Filtrar Faixa de Dias da Perda:", ["0 a 3 dias", "3 a 10 dias", "Mais de 10 dias"], default=["3 a 10 dias", "Mais de 10 dias"], key="faixa_perdidos")
         with col_f2:
-            filtro_cobranca = st.selectbox("Filtrar Status de Redistribuição:", ["Apenas Nunca Redistribuídos", "Todos", "Apenas Já Redistribuídos"], key="cob_perdidos")
+            # TRAVA: Por padrão fica estritamente nos NUNCA REDISTRIBUÍDOS
+            filtro_cobranca = st.selectbox("Visualização da Fila:", ["Apenas Pendentes (Nunca Redistribuídos)", "Já Redistribuídos (Para Consulta)", "Todos"], key="cob_perdidos")
         with col_f3:
             donos_originais = ["Todos os Corretores de Origem"] + sorted([c for c in df_perdidos['Corretor'].dropna().unique() if str(c).strip() != ""])
-            filtro_dono_orig = st.selectbox("Filtrar por Corretor Original (Dono do Lead):", donos_originais, key="orig_perdidos")
+            filtro_dono_orig = st.selectbox("Filtrar por Corretor Original (Dono Anterior):", donos_originais, key="orig_perdidos")
 
         dados_base = df_perdidos[df_perdidos['Faixa_Atraso'].isin(filtro_faixa)].copy()
-        if filtro_cobranca == "Apenas Nunca Redistribuídos":
+        
+        # Aplicação rigorosa da trava
+        if filtro_cobranca == "Apenas Pendentes (Nunca Redistribuídos)":
             dados_base = dados_base[dados_base['Status_Cobranca'] == "Nunca Cobrado"]
-        elif filtro_cobranca == "Apenas Já Redistribuídos":
+        elif filtro_cobranca == "Já Redistribuídos (Para Consulta)":
             dados_base = dados_base[dados_base['Status_Cobranca'] == "Já Cobrado/Passado"]
 
         if filtro_dono_orig != "Todos os Corretores de Origem":
             dados_base = dados_base[dados_base['Corretor'] == filtro_dono_orig]
 
         st.markdown("---")
+        
+        if filtro_cobranca == "Já Redistribuídos (Para Consulta)":
+            st.info("Visualizando leads que já foram redistribuídos anteriormente. Use esta tela apenas para consulta e auditoria.")
+            st.dataframe(dados_base[['Nome Cliente', 'Celular_Limpo', 'Corretor', 'corretor_cobrado', 'data_ultima_cobranca', 'Motivo Perda']], use_container_width=True)
+            return
+
         st.markdown("#### Configuração da Redistribuição do Malote")
         
-        # 1. Regra de exclusão: se filtrou um corretor de origem, ele NÃO pode ser o destino
+        # Regra 1: o corretor de origem filtrado não pode receber seus próprios leads
         if filtro_dono_orig != "Todos os Corretores de Origem":
             destinatarios_possiveis = [c for c in corretores_disponiveis if c != filtro_dono_orig]
         else:
             destinatarios_possiveis = corretores_disponiveis
 
         if not destinatarios_possiveis:
-            st.warning("Não há corretores de destino disponíveis para redistribuição.")
+            st.warning("Não há corretores de destino disponíveis.")
             return
 
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", destinatarios_possiveis, key="destinatario_novo_perdidos")
 
-        # 2. Regra de exclusão: filtra para garantir que nenhum lead pertença ao novo_destinatario
+        # Regra 2: remove da lista qualquer lead cujo dono original seja o próprio novo_destinatario
         dados_filtrados = dados_base[dados_base['Corretor'] != novo_destinatario].copy()
         total_disponivel = len(dados_filtrados)
 
         with col_m2:
             if total_disponivel > 0:
-                tamanho_malote = st.number_input(f"Quantidade de leads neste malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_perdidos_{novo_destinatario}")
+                tamanho_malote = st.number_input(f"Quantidade no malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_perdidos_{novo_destinatario}")
             else:
-                st.write("**Disponíveis:** 0 leads")
+                st.write("**Disponíveis:** 0 leads livres")
                 tamanho_malote = 0
 
         if total_disponivel == 0:
-            st.info(f"Nenhum lead disponível para redistribuir para **{novo_destinatario}** (ou todos os leads disponíveis já pertenciam a ele originalmente).")
+            st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}** (todos os pendentes já foram enviados ou pertenciam a ele).")
             return
 
         malote_atual = dados_filtrados.head(int(tamanho_malote))
@@ -268,12 +277,12 @@ if arquivo_atual:
 
         if st.button(f"Registrar Redistribuição do Malote para {novo_destinatario}", key=f"btn_perdidos_{novo_destinatario}"):
             registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
-            st.success(f"Malote de {len(leads_para_gravar)} leads registrado como redistribuído para {novo_destinatario}!")
+            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e REMOVIDOS da fila ativa.")
             st.rerun()
 
         st.markdown("#### Detalhes do Malote (Com Corretor Original)")
         df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
-        st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Status_Cobranca']], use_container_width=True)
+        st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
 
     with aba1:
         df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
