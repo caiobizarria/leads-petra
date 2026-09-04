@@ -107,7 +107,6 @@ def preparar_dataframe(df_raw):
 
 st.title("Gestão Comercial & Retrabalho de Leads")
 
-# Menus de Upload na Barra Lateral
 st.sidebar.markdown("### Upload de Relatórios")
 arquivo_atual = st.sidebar.file_uploader("1. Relatório Atual / Mais Recente (.xlsx)", type=["xlsx"])
 arquivo_anterior = st.sidebar.file_uploader("2. Relatório Anterior (Opcional p/ Comparar)", type=["xlsx"])
@@ -116,7 +115,6 @@ if arquivo_atual:
     df_crm_atual = pd.read_excel(arquivo_atual, sheet_name=0)
     df = preparar_dataframe(df_crm_atual)
 
-    # Histórico de envios locais
     df_hist = get_historico()
     if not df_hist.empty:
         df = df.merge(df_hist, on='lead_key', how='left')
@@ -135,7 +133,7 @@ if arquivo_atual:
         "4. Comparador de Evolução (Antes vs. Depois)"
     ])
 
-    # --- ABA 1 E 2 ---
+    # --- ABAS 1 E 2 ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
         corretores_com_leads = sorted([c for c in df_tipo['Corretor'].dropna().unique() if str(c).strip() != ""])
@@ -193,7 +191,7 @@ if arquivo_atual:
         st.markdown("#### Detalhamento dos Leads Deste Malote")
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    # --- ABA 3: PERDIDOS ---
+    # --- ABA 3: PERDIDOS (COM TRAVA DE CORRETOR DE ORIGEM) ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
         st.caption("Leads que foram arquivados sem resposta do cliente e possuem maior potencial de conversão com um novo corretor.")
@@ -213,26 +211,46 @@ if arquivo_atual:
             donos_originais = ["Todos os Corretores de Origem"] + sorted([c for c in df_perdidos['Corretor'].dropna().unique() if str(c).strip() != ""])
             filtro_dono_orig = st.selectbox("Filtrar por Corretor Original (Dono do Lead):", donos_originais, key="orig_perdidos")
 
-        dados_filtrados = df_perdidos[df_perdidos['Faixa_Atraso'].isin(filtro_faixa)]
+        dados_base = df_perdidos[df_perdidos['Faixa_Atraso'].isin(filtro_faixa)].copy()
         if filtro_cobranca == "Apenas Nunca Redistribuídos":
-            dados_filtrados = dados_filtrados[dados_filtrados['Status_Cobranca'] == "Nunca Cobrado"]
+            dados_base = dados_base[dados_base['Status_Cobranca'] == "Nunca Cobrado"]
         elif filtro_cobranca == "Apenas Já Redistribuídos":
-            dados_filtrados = dados_filtrados[dados_filtrados['Status_Cobranca'] == "Já Cobrado/Passado"]
+            dados_base = dados_base[dados_base['Status_Cobranca'] == "Já Cobrado/Passado"]
 
         if filtro_dono_orig != "Todos os Corretores de Origem":
-            dados_filtrados = dados_filtrados[dados_filtrados['Corretor'] == filtro_dono_orig]
+            dados_base = dados_base[dados_base['Corretor'] == filtro_dono_orig]
 
         st.markdown("---")
-        total_disponivel = len(dados_filtrados)
-        if total_disponivel == 0:
-            st.info("Nenhum lead com 'Tentativas de contato sem sucesso' encontrado para os filtros selecionados.")
+        st.markdown("#### Configuração da Redistribuição do Malote")
+        
+        # 1. Regra de exclusão: se filtrou um corretor de origem, ele NÃO pode ser o destino
+        if filtro_dono_orig != "Todos os Corretores de Origem":
+            destinatarios_possiveis = [c for c in corretores_disponiveis if c != filtro_dono_orig]
+        else:
+            destinatarios_possiveis = corretores_disponiveis
+
+        if not destinatarios_possiveis:
+            st.warning("Não há corretores de destino disponíveis para redistribuição.")
             return
 
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", corretores_disponiveis, key="destinatario_novo_perdidos")
+            novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", destinatarios_possiveis, key="destinatario_novo_perdidos")
+
+        # 2. Regra de exclusão: filtra para garantir que nenhum lead pertença ao novo_destinatario
+        dados_filtrados = dados_base[dados_base['Corretor'] != novo_destinatario].copy()
+        total_disponivel = len(dados_filtrados)
+
         with col_m2:
-            tamanho_malote = st.number_input(f"Quantidade de leads neste malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_perdidos_{novo_destinatario}")
+            if total_disponivel > 0:
+                tamanho_malote = st.number_input(f"Quantidade de leads neste malote (Disponíveis: {total_disponivel}):", min_value=1, max_value=total_disponivel, value=min(10, total_disponivel), step=1, key=f"num_perdidos_{novo_destinatario}")
+            else:
+                st.write("**Disponíveis:** 0 leads")
+                tamanho_malote = 0
+
+        if total_disponivel == 0:
+            st.info(f"Nenhum lead disponível para redistribuir para **{novo_destinatario}** (ou todos os leads disponíveis já pertenciam a ele originalmente).")
+            return
 
         malote_atual = dados_filtrados.head(int(tamanho_malote))
 
@@ -269,11 +287,9 @@ if arquivo_atual:
         df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
         renderizar_painel_perdidos(df_3)
 
-    # --- ABA 4: COMPARADOR ENTRE PLANILHAS COM GUIA & LEGENDA ---
+    # --- ABA 4: COMPARADOR ENTRE PLANILHAS ---
     with aba4:
         st.subheader("Análise Comparativa de Evolução da Equipe")
-        
-        # Bloco explicativo com a legenda detalhada
         with st.expander("ℹ️ GUIA RÁPIDO: O que significa cada status de evolução?", expanded=True):
             st.markdown("""
             Esta tela compara a planilha anterior com a atual cruzando o telefone e data do lead:
