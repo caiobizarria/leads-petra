@@ -24,7 +24,6 @@ def init_db():
             total_cobrancas INTEGER DEFAULT 1
         )
     ''')
-    # Tabela de bloqueio definitivo de leads
     c.execute('''
         CREATE TABLE IF NOT EXISTS leads_bloqueados (
             celular TEXT PRIMARY KEY,
@@ -151,7 +150,6 @@ if arquivo_atual:
     df_crm_atual = pd.read_excel(arquivo_atual, sheet_name=0)
     df = preparar_dataframe(df_crm_atual)
 
-    # Histórico de envios locais
     df_hist = get_historico()
     if not df_hist.empty:
         df = df.merge(df_hist, on='lead_key', how='left')
@@ -162,7 +160,6 @@ if arquivo_atual:
 
     df['Status_Cobranca'] = df['data_ultima_cobranca'].apply(lambda x: "Já Cobrado/Passado" if pd.notna(x) else "Nunca Cobrado")
     
-    # Cruzamento com Leads Bloqueados
     df_bloqueados = get_leads_bloqueados()
     telefones_bloqueados = set(df_bloqueados['celular'].tolist()) if not df_bloqueados.empty else set()
     df['Lead_Bloqueado'] = df['Celular_Limpo'].isin(telefones_bloqueados)
@@ -180,7 +177,6 @@ if arquivo_atual:
     # --- ABAS 1 E 2 ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
-        # Exclui leads bloqueados da cobrança ativa
         df_ativos = df_tipo[~df_tipo['Lead_Bloqueado']].copy()
         
         corretores_com_leads = sorted([c for c in df_ativos['Corretor'].dropna().unique() if str(c).strip() != ""])
@@ -238,12 +234,11 @@ if arquivo_atual:
         st.markdown("#### Detalhamento dos Leads Deste Malote")
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    # --- ABA 3: PERDIDOS (COM EXCLUSÃO DE BLOQUEADOS) ---
+    # --- ABA 3: PERDIDOS ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
         st.caption("Leads bloqueados ou que compraram de concorrentes não aparecem nesta fila.")
         
-        # Filtra automaticamente os leads que foram bloqueados
         df_perdidos_ativos = df_perdidos[~df_perdidos['Lead_Bloqueado']].copy()
 
         c1, c2, c3, c4 = st.columns(4)
@@ -411,7 +406,7 @@ if arquivo_atual:
             ]
             st.dataframe(df_comp_exibir[colunas_comp], use_container_width=True)
 
-    # --- ABA 5: CANCELAR / BLOQUEAR LEADS (BLACKLIST) ---
+    # --- ABA 5: CANCELAR / BLOQUEAR LEADS (CORRIGIDA) ---
     with aba5:
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
@@ -420,10 +415,10 @@ if arquivo_atual:
 
         with col_b1:
             st.markdown("#### Bloquear Novo Lead")
-            
-            # Opção de buscar cliente da planilha carregada
             busca_cliente = st.text_input("Buscar por Nome ou Telefone na base atual:")
-            leads_encontrados = []
+            
+            # Inicialização segura como DataFrame
+            leads_encontrados = pd.DataFrame()
             if busca_cliente.strip():
                 leads_encontrados = df[
                     df['Nome Cliente'].astype(str).str.contains(busca_cliente, case=False, na=False) |
@@ -463,7 +458,7 @@ if arquivo_atual:
                     st.error("Informe um número de celular válido para bloquear.")
                 else:
                     bloquear_lead_db(cel_limpo, nome_alvo or "Cliente", motivo_cancel)
-                    st.success(f"Lead {nome_alvo} ({cel_limpo}) foi BLOQUEADO com sucesso e não entrará mais em nenhuma redistribuição!")
+                    st.success(f"Lead {nome_alvo} ({cel_limpo}) foi BLOQUEADO com sucesso!")
                     st.rerun()
 
         with col_b2:
@@ -474,7 +469,6 @@ if arquivo_atual:
             if not df_bloq_exibir.empty:
                 st.dataframe(df_bloq_exibir[['celular', 'nome', 'motivo_cancelamento', 'data_bloqueio']], use_container_width=True)
 
-                # Desbloqueio se necessário
                 tel_desbloquear = st.selectbox("Deseja reativar/desbloquear algum lead?", ["Nenhum"] + df_bloq_exibir['celular'].tolist())
                 if tel_desbloquear != "Nenhum" and st.button(f"Desbloquear {tel_desbloquear}"):
                     desbloquear_lead_db(tel_desbloquear)
