@@ -10,7 +10,7 @@ st.set_page_config(page_title="Gestão de Retrabalho Comercial", layout="wide")
 
 DB_FILE = "retrabalho_historico.db"
 
-# --- BANCO DE DADOS LOCAL ---
+# --- BANCO DE DADOS LOCAL (COM MIGRAÇÃO AUTOMÁTICA DE COLUNAS) ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -27,6 +27,16 @@ def init_db():
             total_cobrancas INTEGER DEFAULT 1
         )
     ''')
+    
+    # Migrações seguras: adiciona colunas caso a tabela tenha sido criada em versão anterior
+    c.execute("PRAGMA table_info(controle_envios)")
+    colunas_existentes = [col[1] for col in c.fetchall()]
+    
+    if "corretor_original" not in colunas_existentes:
+        c.execute("ALTER TABLE controle_envios ADD COLUMN corretor_original TEXT")
+    if "etapa_ao_enviar" not in colunas_existentes:
+        c.execute("ALTER TABLE controle_envios ADD COLUMN etapa_ao_enviar TEXT")
+        
     c.execute('''
         CREATE TABLE IF NOT EXISTS leads_bloqueados (
             celular TEXT PRIMARY KEY,
@@ -409,7 +419,7 @@ if arquivo_atual:
             st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e removidos da fila ativa.")
             st.rerun()
 
-        st.markdown("#### Detalhes do Malote (Com Corretor Original)")
+        st.markdown("#### Detalhamento do Malote (Com Corretor Original)")
         df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
         st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
 
@@ -425,7 +435,7 @@ if arquivo_atual:
         df_3 = df[df['Tipo_Lead'] == "3. Perdidos para Recuperação"]
         renderizar_painel_perdidos(df_3)
 
-    # --- ABA 4: AUDITORIA DE MALOTES ENVIADOS (NOVA) ---
+    # --- ABA 4: AUDITORIA DE MALOTES ENVIADOS ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Evolução no CRM pós-disparo)")
         st.caption("Esta tela audita se os corretores realmente entraram em contato com os leads que você enviou a eles no WhatsApp.")
@@ -435,7 +445,6 @@ if arquivo_atual:
         if df_enviados.empty:
             st.info("Você ainda não registrou nenhum malote de cobrança ou redistribuição no aplicativo.")
         else:
-            # Lógica que diagnostica se o corretor mexeu no lead pós-envio
             def avaliar_atendimento_pos_envio(row):
                 data_envio_str = str(row.get('data_ultima_cobranca', '')).strip()
                 data_contato_crm = str(row.get('Último Contato em', '')).strip()
@@ -452,7 +461,6 @@ if arquivo_atual:
                 except:
                     pass
 
-                # Se a etapa mudou para melhor
                 if etapa_crm_agora != etapa_original_envio and etapa_crm_agora not in ['Em Tentativa', 'Lead na Base', 'Perdido']:
                     return "Convertido / Avançou de Etapa 🎯"
                 elif interagiu:
@@ -462,7 +470,6 @@ if arquivo_atual:
 
             df_enviados['Status_Auditoria'] = df_enviados.apply(avaliar_atendimento_pos_envio, axis=1)
 
-            # Cartões de Métricas
             total_env = len(df_enviados)
             trabalhados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("✅|🎯")])
             ignorados = len(df_enviados[df_enviados['Status_Auditoria'].str.contains("⚠️")])
