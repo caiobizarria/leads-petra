@@ -4,11 +4,11 @@ import sqlite3
 import datetime
 import re
 
-st.set_page_config(page_title="Painel de Controle de Retrabalho Comercial", layout="wide")
+st.set_page_config(page_title="Gestão de Retrabalho Comercial", layout="wide")
 
 DB_FILE = "retrabalho_historico.db"
 
-# --- PERSISTÊNCIA DAS COBRANÇAS REALIZADAS ---
+# --- BANCO DE DADOS LOCAL ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -51,7 +51,7 @@ def get_historico():
     conn.close()
     return df_hist
 
-# --- PROCESSAMENTO DO EXCEL DO CRM ---
+# --- PROCESSAMENTO DO EXCEL ---
 def limpar_celular(val):
     if pd.isna(val):
         return ""
@@ -75,14 +75,12 @@ arquivo = st.sidebar.file_uploader("Subir relatório diário (.xlsx)", type=["xl
 if arquivo:
     df_crm = pd.read_excel(arquivo, sheet_name=0)
     
-    # Tratamento de dados
     df_crm['Celular_Limpo'] = df_crm['Celular Cliente'].apply(limpar_celular)
     df_crm['Recebido_Str'] = df_crm['Recebido em'].astype(str)
     df_crm['lead_key'] = df_crm['Celular_Limpo'] + "_" + df_crm['Recebido_Str']
     df_crm['Tipo_Lead'] = df_crm['Etapa do Funil'].apply(classificar_tipo)
     df_crm['Descrição Último Contato'] = df_crm['Descrição Último Contato'].fillna("Sem descrição registrada")
 
-    # Cálculo dos dias sem interação
     hoje = datetime.datetime.now()
     def calcular_dias(row):
         data_ref = row.get('Último Contato em')
@@ -106,7 +104,7 @@ if arquivo:
 
     df_crm['Faixa_Atraso'] = df_crm['Dias_Sem_Interacao'].apply(faixa_dias)
 
-    # Cruzamento com histórico de envios locais
+    # Histórico de envios locais
     df_hist = get_historico()
     if not df_hist.empty:
         df = df_crm.merge(df_hist, on='lead_key', how='left')
@@ -117,12 +115,11 @@ if arquivo:
 
     df['Status_Cobranca'] = df['data_ultima_cobranca'].apply(lambda x: "Já Cobrado/Passado" if pd.notna(x) else "Nunca Cobrado")
 
-    # --- BARRA LATERAL: FILTRO GERAL POR CORRETOR ---
+    # Filtro de corretor
     st.sidebar.markdown("### Seleção Operacional")
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
     corretor_selecionado = st.sidebar.selectbox("Escolha o Corretor:", corretores_disponiveis)
 
-    # Abas operacionais por tipo de lead
     aba1, aba2, aba3 = st.tabs([
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
@@ -130,20 +127,19 @@ if arquivo:
     ])
 
     def renderizar_painel_operacional(df_tipo, nome_tipo, permitir_troca_corretor=False):
-        # Filtra pelo corretor selecionado
         if not permitir_troca_corretor:
             dados = df_tipo[df_tipo['Corretor'] == corretor_selecionado].copy()
             st.markdown(f"### Leads de **{corretor_selecionado}** — {nome_tipo}")
         else:
             dados = df_tipo.copy()
-            st.markdown(f"### Carteira de **Perdidos** (Para você repassar para o WhatsApp de qualquer corretor)")
+            st.markdown(f"### Carteira de **Perdidos** (Para repassar via WhatsApp)")
 
-        # Métricas de topo por faixa de dias
+        # Métricas de topo
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("0 a 3 dias", len(dados[dados['Faixa_Atraso'] == "0 a 3 dias"]))
         c2.metric("3 a 10 dias", len(dados[dados['Faixa_Atraso'] == "3 a 10 dias"]))
         c3.metric("Mais de 10 dias", len(dados[dados['Faixa_Atraso'] == "Mais de 10 dias"]))
-        c4.metric("Já Cobrados pelo App", len(dados[dados['Status_Cobranca'] == "Já Cobrado/Passado"]))
+        c4.metric("Já Cobrados", len(dados[dados['Status_Cobranca'] == "Já Cobrado/Passado"]))
 
         # Filtros de trabalho
         col_filtro1, col_filtro2 = st.columns(2)
@@ -157,7 +153,7 @@ if arquivo:
         with col_filtro2:
             filtro_cobranca = st.selectbox(
                 "Filtrar por Histórico de Envio:", 
-                ["Todos", "Apenas Nunca Cobrados", "Apenas Já Cobrados"],
+                ["Apenas Nunca Cobrados", "Todos", "Apenas Já Cobrados"],
                 key=f"cob_{nome_tipo}"
             )
 
@@ -169,49 +165,71 @@ if arquivo:
 
         st.markdown("---")
 
-        if dados_filtrados.empty:
+        total_disponivel = len(dados_filtrados)
+        if total_disponivel == 0:
             st.info("Nenhum lead encontrado para os filtros selecionados.")
             return
 
-        # Destinatário real da mensagem no WhatsApp
+        # Controle de Malote
+        st.markdown("#### Configuração do Malote")
+        col_malote1, col_malote2 = st.columns(2)
+        with col_malote1:
+            tamanho_malote = st.number_input(
+                f"Quantos leads deseja enviar neste malote? (Disponíveis: {total_disponivel})",
+                min_value=1,
+                max_value=total_disponivel,
+                value=min(10, total_disponivel),
+                step=1,
+                key=f"num_malote_{nome_tipo}"
+            )
+        
+        # Destinatário
         corretor_destino = corretor_selecionado
-        if permitir_troca_corretor:
-            corretor_destino = st.selectbox("Para qual corretor você vai mandar esses contatos no WhatsApp?", corretores_disponiveis, key=f"dest_{nome_tipo}")
+        with col_malote2:
+            if permitir_troca_corretor:
+                corretor_destino = st.selectbox(
+                    "Enviar este malote para o WhatsApp de:", 
+                    corretores_disponiveis, 
+                    key=f"dest_{nome_tipo}"
+                )
+            else:
+                st.write(f"**Destinatário:** {corretor_destino}")
 
-        # Geração do texto formatado para copiar direto para o WhatsApp do corretor
-        st.markdown(f"#### Lista Formatada para Copiar (WhatsApp de {corretor_destino})")
+        # Recorte do lote escolhido
+        malote_atual = dados_filtrados.head(int(tamanho_malote))
+
+        # Texto enxuto para WhatsApp
+        st.markdown(f"#### Lista do Malote para Copiar ({len(malote_atual)} leads)")
         
         texto_whatsapp = f"*LISTA DE LEADS - {nome_tipo.upper()}*\n"
         texto_whatsapp += f"*Destinatário:* {corretor_destino}\n"
         texto_whatsapp += f"*Data:* {hoje.strftime('%d/%m/%Y')}\n\n"
         
         leads_para_gravar = []
-        for _, r in dados_filtrados.iterrows():
-            linha = f"• *{r['Nome Cliente']}* - Tel: {r['Celular_Limpo']} ({r['Faixa_Atraso']})\n  _Último contato:_ {r['Descrição Último Contato']}\n"
-            texto_whatsapp += linha
+        for _, r in malote_atual.iterrows():
+            texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({
                 'lead_key': r['lead_key'],
                 'nome': r['Nome Cliente'],
                 'celular': r['Celular_Limpo']
             })
 
-        st.text_area("Copie o texto abaixo e cole no WhatsApp do corretor:", value=texto_whatsapp, height=200, key=f"txt_{nome_tipo}")
+        st.text_area("Copie o texto abaixo e cole no WhatsApp:", value=texto_whatsapp, height=180, key=f"txt_{nome_tipo}")
 
-        # Botão que efetiva o registro no banco
-        if st.button(f"Registrar Envio / Marcar como Passado para {corretor_destino}", key=f"btn_{nome_tipo}"):
+        # Registro apenas do malote enviado
+        if st.button(f"Registrar Envio do Malote ({len(leads_para_gravar)} leads) para {corretor_destino}", key=f"btn_{nome_tipo}"):
             registrar_lote_enviado(leads_para_gravar, corretor_destino, nome_tipo)
-            st.success(f"Sucesso! {len(leads_para_gravar)} leads registrados como enviados para {corretor_destino}. O app já atualizou o status.")
+            st.success(f"Malote de {len(leads_para_gravar)} leads registrado para {corretor_destino}! Próximos leads já prontos.")
             st.rerun()
 
-        # Tabela detalhada de conferência com a Descrição do Último Contato
-        st.markdown("#### Detalhamento dos Leads")
+        # Detalhamento do malote na tabela (mantendo a descrição para você consultar)
+        st.markdown("#### Detalhes dos Leads Deste Malote (Para sua conferência)")
         colunas_tabela = [
             'Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 
-            'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca', 'data_ultima_cobranca'
+            'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca'
         ]
-        st.dataframe(dados_filtrados[colunas_tabela], use_container_width=True)
+        st.dataframe(malote_atual[colunas_tabela], use_container_width=True)
 
-    # --- EXECUÇÃO DAS TELAS ---
     with aba1:
         df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
         renderizar_painel_operacional(df_1, "Aguardando 1ª Interação", permitir_troca_corretor=False)
