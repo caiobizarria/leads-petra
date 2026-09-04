@@ -5,6 +5,7 @@ import pandas as pd
 import datetime
 import re
 import json
+import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
@@ -253,7 +254,7 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    aba_visao, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba6 = st.tabs([
+    aba_visao, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
         "📊 Visão Geral & Consolidado",
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
@@ -261,13 +262,14 @@ if arquivo_atual:
         "4. Perdidos para Recuperação",
         "5. Auditoria de Malotes (Google Sheets)",
         "6. Comparador de Planilhas (Raio-X)",
-        "7. Bloqueio de Leads"
+        "📑 Relatórios (Corretor & Loteadora)",
+        "8. Bloqueio de Leads"
     ])
 
     # --- ABA CONSOLIDADA: VISÃO GERAL DE TODOS OS LEADS ---
     with aba_visao:
         st.subheader("Panorama Consolidado da Base Importada")
-        st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio e corretor.")
+        st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio, motivos de perda e corretores.")
 
         total_base = len(df)
         total_1a = len(df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"])
@@ -275,7 +277,6 @@ if arquivo_atual:
         total_vis = len(df[df['Tipo_Lead'] == "3. Visitas & Fechamento"])
         total_recup = len(df[df['Tipo_Lead'] == "4. Perdidos para Recuperação"])
         total_outros_perd = len(df[df['Tipo_Lead'] == "Perdido (Outros Motivos)"])
-        total_bloq = len(df[df['Lead_Bloqueado']])
 
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total de Leads na Planilha", total_base)
@@ -288,16 +289,29 @@ if arquivo_atual:
         col_v1, col_v2 = st.columns([1, 1])
 
         with col_v1:
-            st.markdown("#### 📌 Distribuição Exata por Etapa do Funil no CRM")
+            st.markdown("#### 📌 Distribuição por Etapa do Funil")
             df_etapas = df['Etapa do Funil'].value_counts().reset_index()
             df_etapas.columns = ['Etapa do Funil', 'Quantidade de Leads']
             df_etapas['% da Base'] = (df_etapas['Quantidade de Leads'] / total_base * 100).map("{:.1f}%".format)
             st.dataframe(df_etapas, use_container_width=True, hide_index=True)
 
         with col_v2:
-            st.markdown("#### 👥 Distribuição da Carteira por Corretor")
-            df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
-            st.dataframe(df_dist_corr, use_container_width=True)
+            st.markdown("#### ❌ Análise dos Motivos de Perda (Percentual)")
+            df_perdas_base = df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')].copy()
+            total_perdas = len(df_perdas_base)
+            if total_perdas > 0:
+                loss_counts = df_perdas_base['Motivo Perda'].value_counts().reset_index()
+                loss_counts.columns = ['Motivo de Perda', 'Quantidade']
+                loss_counts['% dos Perdidos'] = (loss_counts['Quantidade'] / total_perdas * 100).map("{:.1f}%".format)
+                loss_counts['% da Base Total'] = (loss_counts['Quantidade'] / total_base * 100).map("{:.1f}%".format)
+                st.dataframe(loss_counts, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhum lead com motivo de perda informado.")
+
+        st.markdown("---")
+        st.markdown("#### 👥 Distribuição da Carteira por Corretor")
+        df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
+        st.dataframe(df_dist_corr, use_container_width=True)
 
     # --- PAINEL PADRÃO PARA CORRETOR FIXO (ABAS 1, 2 E 3) ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
@@ -796,7 +810,132 @@ if arquivo_atual:
 
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
-    # --- ABA 7: CANCELAR / BLOQUEAR LEADS ---
+    # --- ABA 7: CENTRAL DE RELATÓRIOS (CORRETOR & LOTEADORA) ---
+    with aba_relatorios:
+        st.subheader("Central de Relatórios Executivos")
+        st.caption("Gere visões personalizadas: uma voltada para o corretor acompanhar sua carteira e outra para a loteadora avaliar o ROI e funil macro.")
+
+        sub_aba_corr, sub_aba_loteadora = st.tabs(["👤 Relatório do Corretor", "🏢 Relatório da Loteadora"])
+
+        # 1. RELATÓRIO DO CORRETOR
+        with sub_aba_corr:
+            st.markdown("### 📋 Extrato de Carteira do Corretor")
+            corr_rel = st.selectbox("Selecione o Corretor:", corretores_disponiveis, key="sel_rep_corr")
+            df_c_rel = df[df['Corretor'] == corr_rel].copy()
+
+            t_c_total = len(df_c_rel)
+            t_c_1a = len(df_c_rel[df_c_rel['Tipo_Lead'] == "1. Aguardando 1ª Interação"])
+            t_c_atend = len(df_c_rel[df_c_rel['Tipo_Lead'] == "2. Em Atendimento"])
+            t_c_vis = len(df_c_rel[df_c_rel['Tipo_Lead'] == "3. Visitas & Fechamento"])
+            t_c_parados = len(df_c_rel[df_c_rel['Faixa_Atraso'] == "Mais de 10 dias"])
+
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            rc1.metric("Total em Carteira", t_c_total)
+            rc2.metric("Em Atendimento", t_c_atend)
+            rc3.metric("Visitas / Fechamentos", t_c_vis)
+            rc4.metric("Parados há +10 dias", t_c_parados, delta=f"-{t_c_parados}" if t_c_parados > 0 else "0", delta_color="inverse")
+
+            st.markdown(f"#### Detalhamento de Leads de {corr_rel}")
+            cols_show_corr = ['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Dias_Sem_Interacao', 'Último Contato em', 'Descrição Último Contato']
+            df_corr_export = df_c_rel[cols_show_corr].rename(columns={'Celular_Limpo': 'Celular'})
+            st.dataframe(df_corr_export, use_container_width=True, hide_index=True)
+
+            # Botão Download Excel do Corretor
+            buffer_corr = io.BytesIO()
+            with pd.ExcelWriter(buffer_corr, engine='openpyxl') as writer:
+                df_corr_export.to_excel(writer, index=False, sheet_name=f"Carteira_{corr_rel[:15]}")
+            st.download_button(
+                label=f"📥 Baixar Relatório de {corr_rel} (.xlsx)",
+                data=buffer_corr.getvalue(),
+                file_name=f"relatorio_corretor_{corr_rel.replace(' ', '_')}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # 2. RELATÓRIO DA LOTEADORA
+        with sub_aba_loteadora:
+            st.markdown("### 🏢 Dossiê Estratégico para a Loteadora")
+            st.caption("Composição de canais de marketing, taxa de conversão, volume financeiro e motivos de descarte.")
+
+            # Indicadores de Topo
+            tot_leads = len(df)
+            tot_visitas_agend = len(df[df['Etapa do Funil'] == 'Visita Agendada'])
+            tot_visitas_realiz = len(df[df['Etapa do Funil'] == 'Visita Realizada'])
+            tot_vendas = len(df[df['Etapa do Funil'] == 'Negócio Fechado.'])
+            tx_visita = ((tot_visitas_agend + tot_visitas_realiz) / tot_leads * 100) if tot_leads > 0 else 0
+            tx_venda = (tot_vendas / tot_leads * 100) if tot_leads > 0 else 0
+
+            rl1, rl2, rl3, rl4 = st.columns(4)
+            rl1.metric("Leads Totais Captados", tot_leads)
+            rl2.metric("Visitas (Agendadas + Feitas)", tot_visitas_agend + tot_visitas_realiz, f"{tx_visita:.1f}% conversão")
+            rl3.metric("Negócios Fechados", tot_vendas, f"{tx_venda:.2f}% de vendas")
+            
+            # VGN Total
+            if 'VGN (Em negociação)' in df.columns:
+                def limpar_vgn(v):
+                    if pd.isna(v): return 0.0
+                    s = str(v).replace('.', '').replace(',', '.')
+                    try: return float(s)
+                    except: return 0.0
+                vgn_soma = df['VGN (Em negociação)'].apply(limpar_vgn).sum()
+                rl4.metric("Pipeline VGN Ativo", f"R$ {vgn_soma:,.2f}")
+            else:
+                rl4.metric("Pipeline VGN", "N/D")
+
+            st.markdown("---")
+            col_lot1, col_lot2 = st.columns([1, 1])
+
+            with col_lot1:
+                st.markdown("#### 📢 Desempenho por Canal de Mídia (Origem)")
+                if 'Origem (Tipo Mídia)' in df.columns:
+                    orig_grp = df.groupby('Origem (Tipo Mídia)').agg(
+                        Total_Leads=('Nome Cliente', 'count'),
+                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
+                    ).reset_index()
+                    orig_grp['% Conversão em Visita'] = (orig_grp['Visitas'] / orig_grp['Total_Leads'] * 100).map("{:.1f}%".format)
+                    st.dataframe(orig_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Coluna de Origem não encontrada.")
+
+            with col_lot2:
+                st.markdown("#### 🎯 Desempenho por Campanha de Tráfego")
+                if 'Campanha' in df.columns:
+                    camp_grp = df.groupby('Campanha').agg(
+                        Total_Leads=('Nome Cliente', 'count'),
+                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
+                    ).reset_index()
+                    camp_grp['% Visita'] = (camp_grp['Visitas'] / camp_grp['Total_Leads'] * 100).map("{:.1f}%".format)
+                    st.dataframe(camp_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Coluna de Campanha não encontrada.")
+
+            st.markdown("---")
+            st.markdown("#### 🏆 Performance Geral dos Corretores para a Loteadora")
+            perf_loteadora = df.groupby('Corretor').agg(
+                Total_Recebido=('Nome Cliente', 'count'),
+                Em_Atendimento=('Tipo_Lead', lambda s: (s == "2. Em Atendimento").sum()),
+                Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada']).sum()),
+                Vendas=('Etapa do Funil', lambda s: (s == 'Negócio Fechado.').sum()),
+                Perdidos=('Etapa do Funil', lambda s: s.str.contains('Perdido').sum())
+            ).reset_index()
+            perf_loteadora['% Aproveitamento'] = ((perf_loteadora['Visitas'] + perf_loteadora['Vendas']) / perf_loteadora['Total_Recebido'] * 100).map("{:.1f}%".format)
+            st.dataframe(perf_loteadora.sort_values(by='Visitas', ascending=False), use_container_width=True, hide_index=True)
+
+            # Botão Download Relatório Completo Loteadora
+            buffer_lot = io.BytesIO()
+            with pd.ExcelWriter(buffer_lot, engine='openpyxl') as writer:
+                perf_loteadora.to_excel(writer, index=False, sheet_name="Resumo_Corretores")
+                if 'Origem (Tipo Mídia)' in df.columns:
+                    orig_grp.to_excel(writer, index=False, sheet_name="Origem_Midia")
+                if total_perdas > 0:
+                    loss_counts.to_excel(writer, index=False, sheet_name="Motivos_Perda")
+            st.download_button(
+                label="📥 Baixar Dossiê Executivo da Loteadora (.xlsx)",
+                data=buffer_lot.getvalue(),
+                file_name=f"dossie_executivo_loteadora_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    # --- ABA 8: CANCELAR / BLOQUEAR LEADS ---
     with aba6:
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
