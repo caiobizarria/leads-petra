@@ -24,6 +24,15 @@ def init_db():
             total_cobrancas INTEGER DEFAULT 1
         )
     ''')
+    # Tabela de bloqueio definitivo de leads
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS leads_bloqueados (
+            celular TEXT PRIMARY KEY,
+            nome TEXT,
+            motivo_cancelamento TEXT,
+            data_bloqueio TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -51,6 +60,33 @@ def get_historico():
     df_hist = pd.read_sql_query("SELECT lead_key, corretor_cobrado, data_envio as data_ultima_cobranca, total_cobrancas FROM controle_envios", conn)
     conn.close()
     return df_hist
+
+def bloquear_lead_db(celular, nome, motivo):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    c.execute('''
+        INSERT INTO leads_bloqueados (celular, nome, motivo_cancelamento, data_bloqueio)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(celular) DO UPDATE SET
+            motivo_cancelamento = ?,
+            data_bloqueio = ?
+    ''', (celular, nome, motivo, agora, motivo, agora))
+    conn.commit()
+    conn.close()
+
+def desbloquear_lead_db(celular):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM leads_bloqueados WHERE celular = ?", (celular,))
+    conn.commit()
+    conn.close()
+
+def get_leads_bloqueados():
+    conn = sqlite3.connect(DB_FILE)
+    df_bloq = pd.read_sql_query("SELECT * FROM leads_bloqueados", conn)
+    conn.close()
+    return df_bloq
 
 # --- PROCESSAMENTO DO EXCEL ---
 def limpar_celular(val):
@@ -115,6 +151,7 @@ if arquivo_atual:
     df_crm_atual = pd.read_excel(arquivo_atual, sheet_name=0)
     df = preparar_dataframe(df_crm_atual)
 
+    # Histórico de envios locais
     df_hist = get_historico()
     if not df_hist.empty:
         df = df.merge(df_hist, on='lead_key', how='left')
@@ -124,25 +161,35 @@ if arquivo_atual:
         df['total_cobrancas'] = 0
 
     df['Status_Cobranca'] = df['data_ultima_cobranca'].apply(lambda x: "Já Cobrado/Passado" if pd.notna(x) else "Nunca Cobrado")
+    
+    # Cruzamento com Leads Bloqueados
+    df_bloqueados = get_leads_bloqueados()
+    telefones_bloqueados = set(df_bloqueados['celular'].tolist()) if not df_bloqueados.empty else set()
+    df['Lead_Bloqueado'] = df['Celular_Limpo'].isin(telefones_bloqueados)
+
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    aba1, aba2, aba3, aba4 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5 = st.tabs([
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
-        "3. Perdidos para Recuperação (Tentativas Sem Sucesso)",
-        "4. Comparador de Evolução (Antes vs. Depois)"
+        "3. Perdidos para Recuperação",
+        "4. Comparador de Evolução",
+        "5. Bloqueio de Leads (Blacklist)"
     ])
 
     # --- ABAS 1 E 2 ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
-        corretores_com_leads = sorted([c for c in df_tipo['Corretor'].dropna().unique() if str(c).strip() != ""])
+        # Exclui leads bloqueados da cobrança ativa
+        df_ativos = df_tipo[~df_tipo['Lead_Bloqueado']].copy()
+        
+        corretores_com_leads = sorted([c for c in df_ativos['Corretor'].dropna().unique() if str(c).strip() != ""])
         if not corretores_com_leads:
-            st.info("Nenhum lead encontrado nesta categoria.")
+            st.info("Nenhum lead ativo encontrado nesta categoria.")
             return
 
         corretor_alvo = st.selectbox("Selecione o Corretor que será cobrado:", corretores_com_leads, key=f"sel_corretor_{chave_aba}")
-        dados = df_tipo[df_tipo['Corretor'] == corretor_alvo].copy()
+        dados = df_ativos[df_ativos['Corretor'] == corretor_alvo].copy()
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("0 a 3 dias", len(dados[dados['Faixa_Atraso'] == "0 a 3 dias"]))
@@ -179,9 +226,9 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        st.markdown(f"#### Copie a lista abaixo para enviar para **{corretor_alvo}**:")
-        key_dinamica = f"txt_{chave_aba}_{corretor_alvo}_{len(malote_atual)}"
-        st.text_area("Texto formatado:", value=texto_whatsapp, height=180, key=key_dinamica)
+        st.markdown(f"#### Lista para copiar e enviar para **{corretor_alvo}**:")
+        st.caption("Passe o cursor sobre o bloco abaixo e clique no ícone de copiar no canto superior direito:")
+        st.code(texto_whatsapp, language="text")
 
         if st.button(f"Registrar Envio do Malote para {corretor_alvo}", key=f"btn_{chave_aba}_{corretor_alvo}"):
             registrar_lote_enviado(leads_para_gravar, corretor_alvo, titulo_aba)
@@ -191,30 +238,31 @@ if arquivo_atual:
         st.markdown("#### Detalhamento dos Leads Deste Malote")
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    # --- ABA 3: PERDIDOS (COM TRAVA ANTIDUPLICIDADE ABSOLUTA) ---
+    # --- ABA 3: PERDIDOS (COM EXCLUSÃO DE BLOQUEADOS) ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
-        st.caption("Leads arquivados sem resposta. Quando você redistribui um malote, esses leads saem da fila para evitar qualquer duplicidade.")
+        st.caption("Leads bloqueados ou que compraram de concorrentes não aparecem nesta fila.")
         
+        # Filtra automaticamente os leads que foram bloqueados
+        df_perdidos_ativos = df_perdidos[~df_perdidos['Lead_Bloqueado']].copy()
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("0 a 3 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "0 a 3 dias"]))
-        c2.metric("3 a 10 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "3 a 10 dias"]))
-        c3.metric("Mais de 10 dias", len(df_perdidos[df_perdidos['Faixa_Atraso'] == "Mais de 10 dias"]))
-        c4.metric("Já Redistribuídos (Histórico)", len(df_perdidos[df_perdidos['Status_Cobranca'] == "Já Cobrado/Passado"]))
+        c1.metric("0 a 3 dias", len(df_perdidos_ativos[df_perdidos_ativos['Faixa_Atraso'] == "0 a 3 dias"]))
+        c2.metric("3 a 10 dias", len(df_perdidos_ativos[df_perdidos_ativos['Faixa_Atraso'] == "3 a 10 dias"]))
+        c3.metric("Mais de 10 dias", len(df_perdidos_ativos[df_perdidos_ativos['Faixa_Atraso'] == "Mais de 10 dias"]))
+        c4.metric("Já Redistribuídos", len(df_perdidos_ativos[df_perdidos_ativos['Status_Cobranca'] == "Já Cobrado/Passado"]))
 
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
             filtro_faixa = st.multiselect("Filtrar Faixa de Dias da Perda:", ["0 a 3 dias", "3 a 10 dias", "Mais de 10 dias"], default=["3 a 10 dias", "Mais de 10 dias"], key="faixa_perdidos")
         with col_f2:
-            # TRAVA: Por padrão fica estritamente nos NUNCA REDISTRIBUÍDOS
             filtro_cobranca = st.selectbox("Visualização da Fila:", ["Apenas Pendentes (Nunca Redistribuídos)", "Já Redistribuídos (Para Consulta)", "Todos"], key="cob_perdidos")
         with col_f3:
-            donos_originais = ["Todos os Corretores de Origem"] + sorted([c for c in df_perdidos['Corretor'].dropna().unique() if str(c).strip() != ""])
+            donos_originais = ["Todos os Corretores de Origem"] + sorted([c for c in df_perdidos_ativos['Corretor'].dropna().unique() if str(c).strip() != ""])
             filtro_dono_orig = st.selectbox("Filtrar por Corretor Original (Dono Anterior):", donos_originais, key="orig_perdidos")
 
-        dados_base = df_perdidos[df_perdidos['Faixa_Atraso'].isin(filtro_faixa)].copy()
+        dados_base = df_perdidos_ativos[df_perdidos_ativos['Faixa_Atraso'].isin(filtro_faixa)].copy()
         
-        # Aplicação rigorosa da trava
         if filtro_cobranca == "Apenas Pendentes (Nunca Redistribuídos)":
             dados_base = dados_base[dados_base['Status_Cobranca'] == "Nunca Cobrado"]
         elif filtro_cobranca == "Já Redistribuídos (Para Consulta)":
@@ -226,13 +274,12 @@ if arquivo_atual:
         st.markdown("---")
         
         if filtro_cobranca == "Já Redistribuídos (Para Consulta)":
-            st.info("Visualizando leads que já foram redistribuídos anteriormente. Use esta tela apenas para consulta e auditoria.")
+            st.info("Visualizando leads que já foram redistribuídos anteriormente.")
             st.dataframe(dados_base[['Nome Cliente', 'Celular_Limpo', 'Corretor', 'corretor_cobrado', 'data_ultima_cobranca', 'Motivo Perda']], use_container_width=True)
             return
 
         st.markdown("#### Configuração da Redistribuição do Malote")
         
-        # Regra 1: o corretor de origem filtrado não pode receber seus próprios leads
         if filtro_dono_orig != "Todos os Corretores de Origem":
             destinatarios_possiveis = [c for c in corretores_disponiveis if c != filtro_dono_orig]
         else:
@@ -246,7 +293,6 @@ if arquivo_atual:
         with col_m1:
             novo_destinatario = st.selectbox("Para qual NOVO corretor você enviará esse malote?", destinatarios_possiveis, key="destinatario_novo_perdidos")
 
-        # Regra 2: remove da lista qualquer lead cujo dono original seja o próprio novo_destinatario
         dados_filtrados = dados_base[dados_base['Corretor'] != novo_destinatario].copy()
         total_disponivel = len(dados_filtrados)
 
@@ -258,7 +304,7 @@ if arquivo_atual:
                 tamanho_malote = 0
 
         if total_disponivel == 0:
-            st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}** (todos os pendentes já foram enviados ou pertenciam a ele).")
+            st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
             return
 
         malote_atual = dados_filtrados.head(int(tamanho_malote))
@@ -271,13 +317,13 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        st.markdown(f"#### Copie a lista abaixo para enviar para **{novo_destinatario}**:")
-        key_dinamica_perdidos = f"txt_perdidos_{novo_destinatario}_{len(malote_atual)}"
-        st.text_area("Texto formatado:", value=texto_whatsapp, height=180, key=key_dinamica_perdidos)
+        st.markdown(f"#### Lista para copiar e enviar para **{novo_destinatario}**:")
+        st.caption("Passe o cursor sobre o bloco abaixo e clique no ícone de copiar no canto superior direito:")
+        st.code(texto_whatsapp, language="text")
 
         if st.button(f"Registrar Redistribuição do Malote para {novo_destinatario}", key=f"btn_perdidos_{novo_destinatario}"):
             registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
-            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e REMOVIDOS da fila ativa.")
+            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e removidos da fila ativa.")
             st.rerun()
 
         st.markdown("#### Detalhes do Malote (Com Corretor Original)")
@@ -303,20 +349,11 @@ if arquivo_atual:
             st.markdown("""
             Esta tela compara a planilha anterior com a atual cruzando o telefone e data do lead:
             
-            * 🚀 **Avançou de Etapa (1ª Interação -> Atendimento):**  
-              *O cliente respondeu!* O lead saiu do status de tentativa (*Em Tentativa / Lead na Base*) e foi para atendimento ativo (*Visita, Negociação, etc.*).
-              
-            * 📞 **Novo Contato Registrado:**  
-              *O corretor trabalhou o lead!* A fase ainda não mudou, mas a data do `Último Contato em` foi atualizada no CRM com nova ligação ou mensagem.
-              
-            * 🎯 **Recuperado com Sucesso:**  
-              *A redistribuição deu certo!* Lead que na planilha anterior estava arquivado como *Perdido* e agora foi resgatado para *Em Atendimento*.
-              
-            * ❌ **Marcado como Perdido:**  
-              *Descarte de carteira.* O lead estava ativo na planilha anterior e foi finalizado como perdido no período analisado.
-              
-            * ⚠️ **Sem Alteração no CRM:**  
-              *Lead estagnado.* Não houve alteração de fase e nenhuma nova data de contato foi registrada pelo corretor desde a última planilha. Ideal para cobrança.
+            * 🚀 **Avançou de Etapa (1ª Interação -> Atendimento):** O lead saiu do status de tentativa (*Em Tentativa / Lead na Base*) e foi para atendimento ativo.
+            * 📞 **Novo Contato Registrado:** A data do `Último Contato em` foi atualizada no CRM com nova ligação ou mensagem.
+            * 🎯 **Recuperado com Sucesso:** Lead que estava arquivado como *Perdido* e foi resgatado para *Em Atendimento*.
+            * ❌ **Marcado como Perdido:** O lead foi finalizado como perdido no período analisado.
+            * ⚠️ **Sem Alteração no CRM:** Nenhuma alteração de fase ou contato registrado desde a última planilha.
             """)
 
         if not arquivo_anterior:
@@ -365,7 +402,6 @@ if arquivo_atual:
 
             st.markdown("### Filtrar e Auditar Leads")
             corretor_filtro_comp = st.selectbox("Selecione um Corretor para auditar:", ["Todos"] + corretores_disponiveis, key="filtro_comp_corretor")
-            
             df_comp_exibir = df_comp if corretor_filtro_comp == "Todos" else df_comp[df_comp['Corretor_atual'] == corretor_filtro_comp]
 
             colunas_comp = [
@@ -374,5 +410,78 @@ if arquivo_atual:
                 'Último Contato em_anterior', 'Último Contato em_atual'
             ]
             st.dataframe(df_comp_exibir[colunas_comp], use_container_width=True)
+
+    # --- ABA 5: CANCELAR / BLOQUEAR LEADS (BLACKLIST) ---
+    with aba5:
+        st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
+        st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
+
+        col_b1, col_b2 = st.columns([1, 1])
+
+        with col_b1:
+            st.markdown("#### Bloquear Novo Lead")
+            
+            # Opção de buscar cliente da planilha carregada
+            busca_cliente = st.text_input("Buscar por Nome ou Telefone na base atual:")
+            leads_encontrados = []
+            if busca_cliente.strip():
+                leads_encontrados = df[
+                    df['Nome Cliente'].astype(str).str.contains(busca_cliente, case=False, na=False) |
+                    df['Celular_Limpo'].astype(str).str.contains(busca_cliente, case=False, na=False)
+                ].head(10)
+
+            celular_alvo = ""
+            nome_alvo = ""
+
+            if not leads_encontrados.empty:
+                opcao_sel = st.selectbox(
+                    "Selecione o lead encontrado:",
+                    options=leads_encontrados['lead_key'].tolist(),
+                    format_func=lambda x: f"{leads_encontrados.loc[leads_encontrados['lead_key']==x, 'Nome Cliente'].values[0]} ({leads_encontrados.loc[leads_encontrados['lead_key']==x, 'Celular_Limpo'].values[0]})"
+                )
+                lead_escolhido = leads_encontrados[leads_encontrados['lead_key'] == opcao_sel].iloc[0]
+                celular_alvo = lead_escolhido['Celular_Limpo']
+                nome_alvo = lead_escolhido['Nome Cliente']
+            else:
+                celular_alvo = st.text_input("Ou digite o Celular (apenas dígitos):", value="")
+                nome_alvo = st.text_input("Nome do Cliente (opcional):", value="")
+
+            motivo_cancel = st.selectbox(
+                "Motivo do Bloqueio:",
+                [
+                    "Já comprou de concorrente",
+                    "Pediu para não entrar em contato",
+                    "Número errado / Inexistente",
+                    "Sem interesse definitivo",
+                    "Outro motivo"
+                ]
+            )
+
+            if st.button("Confirmar Bloqueio do Lead"):
+                cel_limpo = limpar_celular(celular_alvo)
+                if len(cel_limpo) < 8:
+                    st.error("Informe um número de celular válido para bloquear.")
+                else:
+                    bloquear_lead_db(cel_limpo, nome_alvo or "Cliente", motivo_cancel)
+                    st.success(f"Lead {nome_alvo} ({cel_limpo}) foi BLOQUEADO com sucesso e não entrará mais em nenhuma redistribuição!")
+                    st.rerun()
+
+        with col_b2:
+            st.markdown("#### Leads Bloqueados Atualmente")
+            df_bloq_exibir = get_leads_bloqueados()
+            st.metric("Total de Leads Bloqueados", len(df_bloq_exibir))
+
+            if not df_bloq_exibir.empty:
+                st.dataframe(df_bloq_exibir[['celular', 'nome', 'motivo_cancelamento', 'data_bloqueio']], use_container_width=True)
+
+                # Desbloqueio se necessário
+                tel_desbloquear = st.selectbox("Deseja reativar/desbloquear algum lead?", ["Nenhum"] + df_bloq_exibir['celular'].tolist())
+                if tel_desbloquear != "Nenhum" and st.button(f"Desbloquear {tel_desbloquear}"):
+                    desbloquear_lead_db(tel_desbloquear)
+                    st.success(f"Lead {tel_desbloquear} desbloqueado e liberado novamente!")
+                    st.rerun()
+            else:
+                st.info("Nenhum lead bloqueado até o momento.")
+
 else:
     st.info("Faça o upload do relatório diário na barra lateral para iniciar.")
