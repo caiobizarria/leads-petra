@@ -89,19 +89,74 @@ def get_leads_bloqueados():
     conn.close()
     return df_bloq
 
-# Função para copiar direto para a área de transferência do usuário
-def copiar_para_clipboard(texto):
-    texto_json = json.dumps(texto)
-    js = f"""
+# Componente HTML com botão nativo com permissão de Clipboard direto no navegador
+def render_botao_copiar(texto_para_copiar, rotulo="📋 Copiar Lista para o WhatsApp"):
+    texto_escapado = json.dumps(texto_para_copiar)
+    html_code = f"""
+    <button id="btn_copiar" style="
+        background-color: #25D366;
+        color: white;
+        border: none;
+        padding: 10px 18px;
+        font-size: 15px;
+        font-weight: bold;
+        border-radius: 8px;
+        cursor: pointer;
+        width: 100%;
+        margin-top: 6px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+    ">
+        {rotulo}
+    </button>
+    <div id="status_copia" style="font-size: 13px; color: #155724; font-weight: 500; text-align: center; display: none;">
+        ✅ Lista copiada com sucesso para sua área de transferência!
+    </div>
     <script>
-    navigator.clipboard.writeText({texto_json}).then(function() {{
-        console.log('Texto copiado com sucesso');
-    }}).catch(function(err) {{
-        console.error('Erro ao copiar: ', err);
+    document.getElementById("btn_copiar").addEventListener("click", function() {{
+        const text = {texto_escapado};
+        if (navigator.clipboard && window.isSecureContext) {{
+            navigator.clipboard.writeText(text).then(() => {{
+                mostrarSucesso();
+            }}).catch(() => {{
+                fallbackCopy(text);
+            }});
+        }} else {{
+            fallbackCopy(text);
+        }}
     }});
+
+    function fallbackCopy(text) {{
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {{
+            document.execCommand('copy');
+            mostrarSucesso();
+        }} catch (err) {{
+            alert('Não foi possível copiar automaticamente. Use o ícone de cópia no bloco de texto.');
+        }}
+        document.body.removeChild(textArea);
+    }}
+
+    function mostrarSucesso() {{
+        const status = document.getElementById("status_copia");
+        status.style.display = "block";
+        setTimeout(() => {{
+            status.style.display = "none";
+        }}, 3500);
+    }}
     </script>
     """
-    components.html(js, height=0, width=0)
+    components.html(html_code, height=75)
 
 # --- PROCESSAMENTO DO EXCEL ---
 def limpar_celular(val):
@@ -238,15 +293,17 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        # Prévia do texto que será enviado
-        with st.expander("👁️ Ver prévia da mensagem gerada:", expanded=True):
-            st.text(texto_whatsapp)
+        st.markdown(f"#### Lista do Malote para **{corretor_alvo}**:")
+        # Botão de cópia direta via JavaScript
+        render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
+        
+        # Bloco visível como alternativa com ícone no canto superior
+        st.code(texto_whatsapp, language="text")
 
-        # BOTÃO ÚNICO: COPIA E REGISTRA AO MESMO TEMPO
-        if st.button(f"📋 Copiar Lista ({len(leads_para_gravar)} leads) e Registrar Envio para {corretor_alvo}", key=f"btn_copiar_reg_{chave_aba}_{corretor_alvo}", type="primary"):
-            copiar_para_clipboard(texto_whatsapp)
+        # Botão dedicado para salvar o envio e avançar a fila
+        if st.button(f"✅ Confirmar e Registrar Envio do Malote para {corretor_alvo}", key=f"btn_reg_{chave_aba}_{corretor_alvo}", type="primary"):
             registrar_lote_enviado(leads_para_gravar, corretor_alvo, titulo_aba)
-            st.success(f"✅ Lista copiada para sua área de transferência e registrada para {corretor_alvo}! Basta colar (Ctrl+V) no WhatsApp.")
+            st.success(f"Malote de {len(leads_para_gravar)} leads registrado como enviado para {corretor_alvo}!")
             st.rerun()
 
         st.markdown("#### Detalhamento dos Leads Deste Malote")
@@ -255,7 +312,7 @@ if arquivo_atual:
     # --- ABA 3: PERDIDOS ---
     def renderizar_painel_perdidos(df_perdidos):
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
-        st.caption("Leads arquivados sem resposta. O clique no botão copia a mensagem e remove os leads da fila imediatamente.")
+        st.caption("Leads arquivados sem resposta. Registre a redistribuição para removê-los da fila ativa.")
         
         df_perdidos_ativos = df_perdidos[~df_perdidos['Lead_Bloqueado']].copy()
 
@@ -330,15 +387,13 @@ if arquivo_atual:
             texto_whatsapp += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
             leads_para_gravar.append({'lead_key': r['lead_key'], 'nome': r['Nome Cliente'], 'celular': r['Celular_Limpo'], 'corretor_orig': r['Corretor']})
 
-        # Prévia
-        with st.expander("👁️ Ver prévia da mensagem gerada:", expanded=True):
-            st.text(texto_whatsapp)
+        st.markdown(f"#### Lista do Malote para **{novo_destinatario}**:")
+        render_botao_copiar(texto_whatsapp, f"📋 Copiar Lista ({len(leads_para_gravar)} leads) para Área de Transferência")
+        st.code(texto_whatsapp, language="text")
 
-        # BOTÃO ÚNICO: COPIA E REGISTRA REDISTRIBUIÇÃO
-        if st.button(f"📋 Copiar Lista ({len(leads_para_gravar)} leads) e Registrar para {novo_destinatario}", key=f"btn_copiar_reg_perdidos_{novo_destinatario}", type="primary"):
-            copiar_para_clipboard(texto_whatsapp)
+        if st.button(f"✅ Confirmar e Registrar Redistribuição para {novo_destinatario}", key=f"btn_reg_perdidos_{novo_destinatario}", type="primary"):
             registrar_lote_enviado(leads_para_gravar, novo_destinatario, "Perdidos Redistribuídos")
-            st.success(f"✅ Lista copiada e redistribuição gravada para {novo_destinatario}! Os leads saíram da fila pendente.")
+            st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} e removidos da fila ativa.")
             st.rerun()
 
         st.markdown("#### Detalhes do Malote (Com Corretor Original)")
