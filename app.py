@@ -575,7 +575,7 @@ if arquivo_atual:
             else:
                 st.success(f"🎉 Excelente! **{corretor_selecionado}** já iniciou contato com 100% dos leads que foram entregues a ele(a).")
 
-    # --- ABA 5: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR) ---
+    # --- ABA 5: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR - CORRIGIDO) ---
     with aba5:
         st.subheader("Raio-X de Modificações por Corretor (Planilha Anterior vs. Atual)")
         st.caption("Descubra exatamente quais alterações de etapa, novos contatos e anotações cada corretor realizou no CRM entre os dois relatórios.")
@@ -586,29 +586,46 @@ if arquivo_atual:
             df_crm_ant = pd.read_excel(arquivo_anterior, sheet_name=0)
             df_ant = preparar_dataframe(df_crm_ant)
 
-            # Cruzamento completo das duas planilhas
+            colunas_ant_selecao = [
+                'lead_key', 'Nome Cliente', 'Celular_Limpo', 'Etapa do Funil',
+                'Último Contato em', 'Descrição Último Contato', 'Corretor', 'Motivo Perda'
+            ]
+            colunas_ant_presentes = [c for c in colunas_ant_selecao if c in df_ant.columns]
+
+            # Merge seguro aplicando sufixos de forma consistente
             df_comp = df.merge(
-                df_ant[['lead_key', 'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Corretor', 'Motivo Perda']], 
+                df_ant[colunas_ant_presentes], 
                 on='lead_key', 
                 how='inner', 
                 suffixes=('_atual', '_anterior')
             )
 
-            # Diagnóstico minucioso campo a campo
-            def auditar_alteracao_detalhada(row):
-                etapa_ant = str(row['Etapa do Funil_anterior']).strip()
-                etapa_atu = str(row['Etapa do Funil_atual']).strip()
-                contato_ant = str(row['Último Contato em_anterior']).strip()
-                contato_atu = str(row['Último Contato em_atual']).strip()
-                desc_ant = str(row['Descrição Último Contato_anterior']).strip()
-                desc_atu = str(row['Descrição Último Contato_atual']).strip()
-                corretor_ant = str(row['Corretor_anterior']).strip()
-                corretor_atu = str(row['Corretor_atual']).strip()
+            # Normalização de nomes para garantir que todas as colunas existam independentemente dos sufixos gerados
+            def extrair_coluna(df_in, prefixo):
+                if f"{prefixo}_atual" in df_in.columns:
+                    return df_in[f"{prefixo}_atual"]
+                elif prefixo in df_in.columns:
+                    return df_in[prefixo]
+                return pd.Series([""] * len(df_in))
 
-                mudou_etapa = (etapa_ant != etapa_atu)
+            df_comp['Nome_Exibicao'] = extrair_coluna(df_comp, 'Nome Cliente')
+            df_comp['Celular_Exibicao'] = extrair_coluna(df_comp, 'Celular_Limpo')
+            df_comp['Corretor_Exibicao'] = extrair_coluna(df_comp, 'Corretor')
+
+            def auditar_alteracao_detalhada(row):
+                etapa_ant = str(row.get('Etapa do Funil_anterior', '')).strip()
+                etapa_atu = str(row.get('Etapa do Funil_atual', row.get('Etapa do Funil', ''))).strip()
+                contato_ant = str(row.get('Último Contato em_anterior', '')).strip()
+                contato_atu = str(row.get('Último Contato em_atual', row.get('Último Contato em', ''))).strip()
+                desc_ant = str(row.get('Descrição Último Contato_anterior', '')).strip()
+                desc_atu = str(row.get('Descrição Último Contato_atual', row.get('Descrição Último Contato', ''))).strip()
+                corretor_ant = str(row.get('Corretor_anterior', '')).strip()
+                corretor_atu = str(row.get('Corretor_atual', row.get('Corretor', ''))).strip()
+
+                mudou_etapa = (etapa_ant != etapa_atu and etapa_ant != "")
                 mudou_contato = (contato_atu != contato_ant and contato_atu != "")
                 mudou_desc = (desc_atu != desc_ant and desc_atu != "" and desc_atu != "Sem descrição registrada")
-                mudou_corretor = (corretor_ant != corretor_atu)
+                mudou_corretor = (corretor_ant != corretor_atu and corretor_ant != "")
 
                 if etapa_ant == 'Perdido' and etapa_atu != 'Perdido':
                     tipo = "🎯 Resgatado de Perdido"
@@ -623,14 +640,13 @@ if arquivo_atual:
                 else:
                     tipo = "💤 Estagnado (Sem Alteração)"
 
-                # Descrição textual da mudança ocorrida
                 detalhes = []
                 if mudou_etapa:
                     detalhes.append(f"Etapa: '{etapa_ant}' ➔ '{etapa_atu}'")
                 if mudou_contato:
                     detalhes.append(f"Novo contato em: {contato_atu}")
                 if mudou_desc:
-                    detalhes.append(f"Nova nota: \"{desc_atu}\"")
+                    detalhes.append(f"Nova anotação: \"{desc_atu}\"")
                 if mudou_corretor:
                     detalhes.append(f"Dono anterior: {corretor_ant}")
 
@@ -639,7 +655,6 @@ if arquivo_atual:
 
             df_comp[['Tipo_Movimentacao', 'Resumo_Modificacao', 'Teve_Movimentacao']] = df_comp.apply(auditar_alteracao_detalhada, axis=1)
 
-            # Painel Geral de Resumo
             total_leads_comparados = len(df_comp)
             total_com_mov = len(df_comp[df_comp['Teve_Movimentacao']])
             total_estagnados = len(df_comp[~df_comp['Teve_Movimentacao']])
@@ -652,12 +667,10 @@ if arquivo_atual:
             p4.metric("Índice de Atividade", f"{taxa_global_mov:.1f}%")
 
             st.markdown("---")
-
-            # 1. RANKING DE ATIVIDADE POR CORRETOR
             st.markdown("### 🏆 Placar de Produtividade por Corretor (Quem Mais Mexeu no CRM)")
             
             resumo_corretores_lista = []
-            for c_nome, c_grp in df_comp.groupby('Corretor_atual'):
+            for c_nome, c_grp in df_comp.groupby('Corretor_Exibicao'):
                 c_total = len(c_grp)
                 c_mov = len(c_grp[c_grp['Teve_Movimentacao']])
                 c_parados = len(c_grp[~c_grp['Teve_Movimentacao']])
@@ -697,15 +710,13 @@ if arquivo_atual:
             )
 
             st.markdown("---")
-
-            # 2. FEED DETALHADO DO CORRETOR
             st.markdown("### 🔍 Raio-X Detalhado do Corretor (Feed de Ações)")
             
             col_f_c1, col_f_c2 = st.columns([1, 1])
             with col_f_c1:
                 corretor_alvo_comp = st.selectbox(
                     "Escolha o Corretor para ver exatamente o que ele mudou:",
-                    ["Todos os Corretores"] + sorted(df_comp['Corretor_atual'].dropna().unique().tolist()),
+                    ["Todos os Corretores"] + sorted(df_comp['Corretor_Exibicao'].dropna().unique().tolist()),
                     key="sel_feed_corretor"
                 )
             with col_f_c2:
@@ -715,7 +726,7 @@ if arquivo_atual:
                     key="sel_feed_tipo"
                 )
 
-            df_feed = df_comp if corretor_alvo_comp == "Todos os Corretores" else df_comp[df_comp['Corretor_atual'] == corretor_alvo_comp]
+            df_feed = df_comp if corretor_alvo_comp == "Todos os Corretores" else df_comp[df_comp['Corretor_Exibicao'] == corretor_alvo_comp]
 
             if filtro_tipo_mov == "Apenas Leads que Mudaram (Ativos)":
                 df_feed = df_feed[df_feed['Teve_Movimentacao']]
@@ -727,35 +738,27 @@ if arquivo_atual:
             else:
                 st.markdown(f"**Exibindo {len(df_feed)} leads:**")
 
-                # Se o usuário escolheu ver estagnados de um corretor específico, permite gerar cobrança de WhatsApp
                 if corretor_alvo_comp != "Todos os Corretores" and filtro_tipo_mov == "Apenas Leads Estagnados (Sem Ação)":
                     msg_inercia = f"Olá, *{corretor_alvo_comp}*! Tudo bem?\n\nIdentificamos no CRM que estes leads da sua carteira continuam sem nenhuma atualização de contato recente:\n\n"
                     for _, r_in in df_feed.head(15).iterrows():
-                        msg_inercia += f"• *{r_in['Nome Cliente_atual']}* - {r_in['Celular_Limpo']}\n"
+                        msg_inercia += f"• *{r_in['Nome_Exibicao']}* - {r_in['Celular_Exibicao']}\n"
                     msg_inercia += "\nConsegue fazer uma rodada de contatos neles hoje e atualizar o CRM? Obrigado!"
 
                     with st.expander("👁️ Mensagem pronta para cobrar este corretor sobre os estagnados:", expanded=False):
                         render_botao_copiar(msg_inercia, f"📋 Copiar Cobrança de Estagnados para {corretor_alvo_comp}")
                         st.code(msg_inercia, language="text")
 
-                # Tabela de Auditoria Visual
-                colunas_feed_view = [
-                    'Nome Cliente_atual', 'Celular_Limpo', 'Corretor_atual',
-                    'Tipo_Movimentacao', 'Resumo_Modificacao',
-                    'Etapa do Funil_anterior', 'Etapa do Funil_atual',
-                    'Descrição Último Contato_atual', 'Último Contato em_atual'
-                ]
-                
-                df_feed_display = df_feed[colunas_feed_view].rename(columns={
-                    'Nome Cliente_atual': 'Cliente',
-                    'Celular_Limpo': 'Celular',
-                    'Corretor_atual': 'Corretor',
-                    'Tipo_Movimentacao': 'Diagnóstico',
-                    'Resumo_Modificacao': 'O Que Foi Modificado',
-                    'Etapa do Funil_anterior': 'Etapa Anterior',
-                    'Etapa do Funil_atual': 'Etapa Atual',
-                    'Descrição Último Contato_atual': 'Última Anotação no CRM',
-                    'Último Contato em_atual': 'Data do Último Contato'
+                # Montagem das colunas para visualização
+                df_feed_display = pd.DataFrame({
+                    'Cliente': df_feed['Nome_Exibicao'],
+                    'Celular': df_feed['Celular_Exibicao'],
+                    'Corretor': df_feed['Corretor_Exibicao'],
+                    'Diagnóstico': df_feed['Tipo_Movimentacao'],
+                    'O Que Foi Modificado': df_feed['Resumo_Modificacao'],
+                    'Etapa Anterior': df_feed.get('Etapa do Funil_anterior', ''),
+                    'Etapa Atual': df_feed.get('Etapa do Funil_atual', df_feed.get('Etapa do Funil', '')),
+                    'Última Anotação no CRM': df_feed.get('Descrição Último Contato_atual', df_feed.get('Descrição Último Contato', '')),
+                    'Data do Último Contato': df_feed.get('Último Contato em_atual', df_feed.get('Último Contato em', ''))
                 })
 
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
