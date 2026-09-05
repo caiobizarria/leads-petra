@@ -191,6 +191,14 @@ def classificar_tipo(row):
             return "Perdido (Outros Motivos)"
     return "Outros"
 
+def parse_data_segura(val):
+    if pd.isna(val) or str(val).strip() == "":
+        return None
+    try:
+        return pd.to_datetime(val, dayfirst=True)
+    except:
+        return None
+
 def preparar_dataframe(df_raw):
     df = df_raw.copy()
     df['Celular_Limpo'] = df['Celular Cliente'].apply(limpar_celular)
@@ -205,11 +213,10 @@ def preparar_dataframe(df_raw):
         data_ref = row.get('Último Contato em')
         if pd.isna(data_ref) or str(data_ref).strip() == "":
             data_ref = row.get('Recebido em')
-        try:
-            d = pd.to_datetime(data_ref, format="%d/%m/%Y %H:%M")
-            return max(0, (hoje - d).days)
-        except:
-            return 0
+        dt = parse_data_segura(data_ref)
+        if dt:
+            return max(0, (hoje - dt).days)
+        return 0
     df['Dias_Sem_Interacao'] = df.apply(calcular_dias, axis=1)
 
     def faixa_dias(dias):
@@ -254,19 +261,20 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    aba_visao, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
-        "📊 Visão Geral & Consolidado",
+    aba_visao, aba_dia, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
+        "📊 Visão Geral",
+        "📅 Movimentações do Dia",
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
         "3. Visitas & Fechamento",
-        "4. Perdidos para Recuperação",
-        "5. Auditoria de Malotes (Google Sheets)",
-        "6. Comparador de Planilhas (Raio-X)",
-        "📑 Relatórios (Corretor & Loteadora)",
+        "4. Fila de Recuperação",
+        "5. Auditoria de Malotes",
+        "6. Comparador de Planilhas",
+        "📑 Relatórios Executivos",
         "8. Bloqueio de Leads"
     ])
 
-    # --- ABA CONSOLIDADA: VISÃO GERAL DE TODOS OS LEADS ---
+    # --- ABA CONSOLIDADA: VISÃO GERAL ---
     with aba_visao:
         st.subheader("Panorama Consolidado da Base Importada")
         st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio, motivos de perda e corretores.")
@@ -276,7 +284,6 @@ if arquivo_atual:
         total_atend = len(df[df['Tipo_Lead'] == "2. Em Atendimento"])
         total_vis = len(df[df['Tipo_Lead'] == "3. Visitas & Fechamento"])
         total_recup = len(df[df['Tipo_Lead'] == "4. Perdidos para Recuperação"])
-        total_outros_perd = len(df[df['Tipo_Lead'] == "Perdido (Outros Motivos)"])
 
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total de Leads na Planilha", total_base)
@@ -312,6 +319,67 @@ if arquivo_atual:
         st.markdown("#### 👥 Distribuição da Carteira por Corretor")
         df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
         st.dataframe(df_dist_corr, use_container_width=True)
+
+    # --- ABA NOVA: MOVIMENTAÇÕES DO DIA (LOG DIÁRIO DO CRM) ---
+    with aba_dia:
+        st.subheader("📅 O que foi movimentado no CRM por data?")
+        st.caption("Filtre o dia exato para ver quais clientes foram atualizados, quais corretores mexeram e as anotações feitas.")
+
+        col_dia1, col_dia2 = st.columns([1, 2])
+        with col_dia1:
+            data_escolhida = st.date_input("Selecione a data para auditar:", value=datetime.date.today(), key="sel_data_mov_dia")
+            data_str_comparar = data_escolhida.strftime("%Y-%m-%d")
+
+        # Função para verificar se houve ação na data
+        def lead_movimentado_na_data(row):
+            dt_contato = parse_data_segura(row.get('Último Contato em'))
+            dt_perdido = parse_data_segura(row.get('Negócio Perdido em'))
+            dt_recebido = parse_data_segura(row.get('Recebido em'))
+
+            # Compara datas
+            contato_no_dia = (dt_contato.strftime("%Y-%m-%d") == data_str_comparar) if dt_contato else False
+            perda_no_dia = (dt_perdido.strftime("%Y-%m-%d") == data_str_comparar) if dt_perdido else False
+            entrada_no_dia = (dt_recebido.strftime("%Y-%m-%d") == data_str_comparar) if dt_recebido else False
+
+            if perda_no_dia:
+                return "❌ Marcado como Perdido"
+            elif contato_no_dia:
+                return "📞 Contato / Atualização no CRM"
+            elif entrada_no_dia:
+                return "🆕 Lead Novo Recebido"
+            return None
+
+        df['Acao_No_Dia'] = df.apply(lead_movimentado_na_data, axis=1)
+        df_mov_dia = df[df['Acao_No_Dia'].notna()].copy()
+
+        with col_dia2:
+            st.metric(
+                label=f"Total de Leads Atualizados em {data_escolhida.strftime('%d/%m/%Y')}",
+                value=len(df_mov_dia),
+                help="Leads que tiveram contato, anotação, descarte ou entrada registrada nesta data."
+            )
+
+        if df_mov_dia.empty:
+            st.warning(f"Nenhum registro com data de atualização em **{data_escolhida.strftime('%d/%m/%Y')}** localizado nesta planilha.")
+            st.info("💡 Dica: Verifique se o relatório que você subiu contém atendimentos registrados para essa data específica.")
+        else:
+            st.markdown("---")
+            st.markdown("#### 👥 Produtividade dos Corretores Nesta Data")
+            resumo_dia_corr = df_mov_dia.groupby(['Corretor', 'Acao_No_Dia']).size().unstack(fill_value=0)
+            st.dataframe(resumo_dia_corr, use_container_width=True)
+
+            st.markdown(f"#### 📝 Lista de Leads Trabalhados em {data_escolhida.strftime('%d/%m/%Y')}")
+            cols_dia_exibir = [
+                'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Acao_No_Dia',
+                'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Motivo Perda'
+            ]
+            df_dia_tabela = df_mov_dia[cols_dia_exibir].rename(columns={
+                'Nome Cliente': 'Cliente',
+                'Celular_Limpo': 'Celular',
+                'Acao_No_Dia': 'Ação Registrada',
+                'Descrição Último Contato': 'Anotação Feita no CRM'
+            })
+            st.dataframe(df_dia_tabela, use_container_width=True, hide_index=True)
 
     # --- PAINEL PADRÃO PARA CORRETOR FIXO (ABAS 1, 2 E 3) ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
@@ -503,16 +571,16 @@ if arquivo_atual:
                         st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} gravados na nuvem e removidos da fila ativa.")
                         st.rerun()
 
-                    st.markdown("#### Detalhes do Malote (Com Corretor Original)")
+                    st.markdown("#### Detalhamento do Malote (Com Corretor Original)")
                     df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
                     st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
                 else:
                     st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (GOOGLE SHEETS) ---
+    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (COMPARATIVO CRONOLÓGICO SEGURO) ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
-        st.caption("Visão executiva do cumprimento de tarefas por cada corretor desde a entrega dos malotes.")
+        st.caption("Verificação cronológica: o corretor só é considerado como 'Trabalhado' se a data do CRM for MAIS RECENTE que a data de envio do malote.")
 
         df_enviados = df[df['Status_Cobranca'] == "Já Cobrado/Passado"].copy()
 
@@ -520,27 +588,29 @@ if arquivo_atual:
             st.info("Nenhum registro de malote localizado na planilha do Google Sheets até o momento.")
         else:
             def avaliar_atendimento_pos_envio(row):
-                data_envio_str = str(row.get('data_ultima_cobranca', '')).strip()
-                data_contato_crm = str(row.get('Último Contato em', '')).strip()
+                data_envio_dt = parse_data_segura(row.get('data_ultima_cobranca'))
+                data_contato_dt = parse_data_segura(row.get('Último Contato em'))
+                data_perdido_dt = parse_data_segura(row.get('Negócio Perdido em'))
+
                 etapa_crm_agora = str(row.get('Etapa do Funil', '')).strip()
                 etapa_original_envio = str(row.get('etapa_ao_enviar', '')).strip()
 
-                interagiu = False
-                try:
-                    d_envio = pd.to_datetime(data_envio_str, format="%d/%m/%Y %H:%M")
-                    if data_contato_crm != "":
-                        d_contato = pd.to_datetime(data_contato_crm, format="%d/%m/%Y %H:%M")
-                        if d_contato >= d_envio:
-                            interagiu = True
-                except:
-                    pass
+                # Mais recente das ações do corretor
+                datas_acao = [d for d in [data_contato_dt, data_perdido_dt] if d is not None]
+                ultima_acao_crm = max(datas_acao) if datas_acao else None
+
+                # Verificação se a ação no CRM foi feita DEPOIS do malote ter sido enviado
+                interagiu_depois = False
+                if data_envio_dt and ultima_acao_crm:
+                    if ultima_acao_crm > data_envio_dt:
+                        interagiu_depois = True
 
                 if etapa_crm_agora != etapa_original_envio and etapa_crm_agora not in ['Em Tentativa', 'Lead na Base', 'Perdido']:
                     return "Convertido / Avançou 🎯"
-                elif interagiu:
-                    return "Trabalhado no CRM ✅"
+                elif interagiu_depois:
+                    return "Trabalhado no CRM (Pós-Envio) ✅"
                 else:
-                    return "Ignorado / Parado ⚠️"
+                    return "Ignorado / Sem Contato Pós-Envio ⚠️"
 
             df_enviados['Status_Auditoria'] = df_enviados.apply(avaliar_atendimento_pos_envio, axis=1)
 
@@ -552,11 +622,11 @@ if arquivo_atual:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total de Leads Entregues", total_env)
             m2.metric("Trabalhados / Convertidos", trabalhados)
-            m3.metric("Ignorados / Sem Contato", ignorados, delta=f"-{ignorados}" if ignorados > 0 else "0", delta_color="inverse")
-            m4.metric("Aproveitamento Geral", f"{taxa_trabalho:.1f}%")
+            m3.metric("Ignorados / Sem Ação Pós-Envio", ignorados, delta=f"-{ignorados}" if ignorados > 0 else "0", delta_color="inverse")
+            m4.metric("Aproveitamento Real", f"{taxa_trabalho:.1f}%")
 
             st.markdown("---")
-            st.markdown("### 🏆 Ranking de Execução de Malotes por Corretor")
+            st.markdown("### 🏆 Ranking de Execução Real de Malotes por Corretor")
             
             corretores_grp = []
             for corr, grp in df_enviados.groupby('corretor_cobrado'):
@@ -579,14 +649,14 @@ if arquivo_atual:
                     'Corretor': corr,
                     'Status Operacional': status_semaforo,
                     'Leads Entregues': total_c,
-                    'Trabalhados': trab_c,
-                    'Ignorados / Parados': ign_c,
-                    'Taxa de Atendimento': f"{taxa_c:.1f}%",
+                    'Trabalhados (Pós-Envio)': trab_c,
+                    'Ignorados': ign_c,
+                    'Taxa Real': f"{taxa_c:.1f}%",
                     'Progresso': f"{barra_visual} ({taxa_c:.0f}%)"
                 })
 
-            df_ranking = pd.DataFrame(corretores_grp).sort_values(by='Ignorados / Parados', ascending=False)
-            st.dataframe(df_ranking[['Corretor', 'Status Operacional', 'Progresso', 'Leads Entregues', 'Trabalhados', 'Ignorados / Parados', 'Taxa de Atendimento']], use_container_width=True, hide_index=True)
+            df_ranking = pd.DataFrame(corretores_grp).sort_values(by='Ignorados', ascending=False)
+            st.dataframe(df_ranking[['Corretor', 'Status Operacional', 'Progresso', 'Leads Entregues', 'Trabalhados (Pós-Envio)', 'Ignorados', 'Taxa Real']], use_container_width=True, hide_index=True)
 
             st.markdown("### 📊 Gráfico de Volume: Trabalhados vs. Ignorados")
             df_chart_dados = df_enviados.groupby(['corretor_cobrado', 'Status_Auditoria']).size().unstack(fill_value=0)
@@ -605,13 +675,13 @@ if arquivo_atual:
 
             col_c1, col_c2, col_c3 = st.columns(3)
             col_c1.metric("Leads Entregues para ele(a)", len(df_1a1))
-            col_c2.metric("Trabalhados", len(df_1a1) - len(pendentes_1a1))
-            col_c3.metric("Ainda Sem Contato", len(pendentes_1a1), delta=f"{len(pendentes_1a1)} pendentes" if len(pendentes_1a1) > 0 else "Em dia", delta_color="inverse")
+            col_c2.metric("Trabalhados Pós-Envio", len(df_1a1) - len(pendentes_1a1))
+            col_c3.metric("Sem Contato Pós-Envio", len(pendentes_1a1), delta=f"{len(pendentes_1a1)} pendentes" if len(pendentes_1a1) > 0 else "Em dia", delta_color="inverse")
 
             if not pendentes_1a1.empty:
-                st.warning(f"**{corretor_selecionado}** possui **{len(pendentes_1a1)} leads** entregues que ainda não têm registro de contato no CRM.")
+                st.warning(f"**{corretor_selecionado}** possui **{len(pendentes_1a1)} leads** entregues que ainda não têm registro de contato POSTERIOR à data do malote.")
                 
-                msg_cobranca = f"Olá, *{corretor_selecionado}*! Tudo bem?\n\nConsta aqui no nosso acompanhamento que você recebeu uma lista de leads para retrabalho recentemente, mas estes contatos ainda constam sem nova interação registrada no sistema:\n\n"
+                msg_cobranca = f"Olá, *{corretor_selecionado}*! Tudo bem?\n\nConsta aqui no nosso acompanhamento que você recebeu uma lista de leads para retrabalho recentemente, mas estes contatos continuam sem nenhuma atualização no CRM após a data de envio:\n\n"
                 for _, r in pendentes_1a1.head(15).iterrows():
                     msg_cobranca += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
                 msg_cobranca += "\nConsegue dar prioridade nesse contato e atualizar o CRM hoje? Obrigado!"
@@ -621,7 +691,7 @@ if arquivo_atual:
                     st.code(msg_cobranca, language="text")
 
                 st.markdown("#### Lista detalhada de leads ignorados deste corretor:")
-                st.dataframe(pendentes_1a1[['Nome Cliente', 'Celular_Limpo', 'data_ultima_cobranca', 'Etapa do Funil', 'Descrição Último Contato']], use_container_width=True)
+                st.dataframe(pendentes_1a1[['Nome Cliente', 'Celular_Limpo', 'data_ultima_cobranca', 'Último Contato em', 'Etapa do Funil', 'Descrição Último Contato']], use_container_width=True)
             else:
                 st.success(f"🎉 Excelente! **{corretor_selecionado}** já iniciou contato com 100% dos leads que foram entregues a ele(a).")
 
@@ -817,7 +887,6 @@ if arquivo_atual:
 
         sub_aba_corr, sub_aba_loteadora = st.tabs(["👤 Relatório do Corretor", "🏢 Relatório da Loteadora"])
 
-        # 1. RELATÓRIO DO CORRETOR
         with sub_aba_corr:
             st.markdown("### 📋 Extrato de Carteira do Corretor")
             corr_rel = st.selectbox("Selecione o Corretor:", corretores_disponiveis, key="sel_rep_corr")
@@ -840,7 +909,6 @@ if arquivo_atual:
             df_corr_export = df_c_rel[cols_show_corr].rename(columns={'Celular_Limpo': 'Celular'})
             st.dataframe(df_corr_export, use_container_width=True, hide_index=True)
 
-            # Botão Download Excel do Corretor
             buffer_corr = io.BytesIO()
             with pd.ExcelWriter(buffer_corr, engine='openpyxl') as writer:
                 df_corr_export.to_excel(writer, index=False, sheet_name=f"Carteira_{corr_rel[:15]}")
@@ -851,12 +919,10 @@ if arquivo_atual:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-        # 2. RELATÓRIO DA LOTEADORA
         with sub_aba_loteadora:
             st.markdown("### 🏢 Dossiê Estratégico para a Loteadora")
             st.caption("Composição de canais de marketing, taxa de conversão, volume financeiro e motivos de descarte.")
 
-            # Indicadores de Topo
             tot_leads = len(df)
             tot_visitas_agend = len(df[df['Etapa do Funil'] == 'Visita Agendada'])
             tot_visitas_realiz = len(df[df['Etapa do Funil'] == 'Visita Realizada'])
@@ -869,7 +935,6 @@ if arquivo_atual:
             rl2.metric("Visitas (Agendadas + Feitas)", tot_visitas_agend + tot_visitas_realiz, f"{tx_visita:.1f}% conversão")
             rl3.metric("Negócios Fechados", tot_vendas, f"{tx_venda:.2f}% de vendas")
             
-            # VGN Total
             if 'VGN (Em negociação)' in df.columns:
                 def limpar_vgn(v):
                     if pd.isna(v): return 0.0
@@ -920,7 +985,6 @@ if arquivo_atual:
             perf_loteadora['% Aproveitamento'] = ((perf_loteadora['Visitas'] + perf_loteadora['Vendas']) / perf_loteadora['Total_Recebido'] * 100).map("{:.1f}%".format)
             st.dataframe(perf_loteadora.sort_values(by='Visitas', ascending=False), use_container_width=True, hide_index=True)
 
-            # Botão Download Relatório Completo Loteadora
             buffer_lot = io.BytesIO()
             with pd.ExcelWriter(buffer_lot, engine='openpyxl') as writer:
                 perf_loteadora.to_excel(writer, index=False, sheet_name="Resumo_Corretores")
