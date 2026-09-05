@@ -199,6 +199,17 @@ def parse_data_segura(val):
     except:
         return None
 
+def formatar_tempo_passado(minutos_totais):
+    if minutos_totais < 60:
+        return f"{int(minutos_totais)} min atrás"
+    horas = int(minutos_totais // 60)
+    mins = int(minutos_totais % 60)
+    if horas < 24:
+        return f"{horas}h {mins}min atrás"
+    dias = int(horas // 24)
+    horas_rest = int(horas % 24)
+    return f"{dias}d {horas_rest}h atrás"
+
 def preparar_dataframe(df_raw):
     df = df_raw.copy()
     df['Celular_Limpo'] = df['Celular Cliente'].apply(limpar_celular)
@@ -227,6 +238,23 @@ def preparar_dataframe(df_raw):
         else:
             return "Mais de 10 dias"
     df['Faixa_Atraso'] = df['Dias_Sem_Interacao'].apply(faixa_dias)
+
+    # Identificação de Lead que Acabou de Entrar (Sem Primeiro Contato)
+    def status_lead_novo(row):
+        dt_recebido = parse_data_segura(row.get('Recebido em'))
+        primeiro_contato = row.get('Data Primeiro Contato')
+        etapa = str(row.get('Etapa do Funil', '')).strip()
+
+        # Se não teve primeiro contato e não foi descartado
+        sem_contato = pd.isna(primeiro_contato) or str(primeiro_contato).strip() == ""
+        if sem_contato and etapa not in ['Perdido', 'Visita Cancelada']:
+            if dt_recebido:
+                minutos = (hoje - dt_recebido).total_seconds() / 60.0
+                if minutos < 0: minutos = 0
+                return pd.Series([True, minutos, formatar_tempo_passado(minutos)])
+        return pd.Series([False, None, "Já Atendido"])
+
+    df[['Lead_Novo_Sem_Contato', 'Minutos_Aguardando', 'Tempo_Aguardando_Texto']] = df.apply(status_lead_novo, axis=1)
     return df
 
 st.title("Gestão Comercial & Retrabalho de Leads")
@@ -263,7 +291,7 @@ if arquivo_atual:
 
     aba_visao, aba_dia, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
         "📊 Visão Geral",
-        "📅 Movimentações do Dia",
+        "⚡ Movimentações & Leads Recentes",
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
         "3. Visitas & Fechamento",
@@ -320,23 +348,71 @@ if arquivo_atual:
         df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
         st.dataframe(df_dist_corr, use_container_width=True)
 
-    # --- ABA NOVA: MOVIMENTAÇÕES DO DIA (LOG DIÁRIO DO CRM) ---
+    # --- ABA: LEADS RECÉM-CHEGADOS & MOVIMENTAÇÕES DO DIA ---
     with aba_dia:
-        st.subheader("📅 O que foi movimentado no CRM por data?")
-        st.caption("Filtre o dia exato para ver quais clientes foram atualizados, quais corretores mexeram e as anotações feitas.")
+        st.subheader("⚡ Alerta de Leads Recentes & Acompanhamento Diário")
+        st.caption("Identifique clientes que acabaram de cair das campanhas sem atendimento e audite o que foi mexido no dia.")
 
+        # SEÇÃO 1: LEADS QUE ACABARAM DE ENTRAR E NINGUÉM FALOU
+        st.markdown("### 🔥 Leads Recém-Chegados Aguardando 1º Contato")
+        df_novos_parados = df[df['Lead_Novo_Sem_Contato']].sort_values(by='Minutos_Aguardando', ascending=True).copy()
+
+        if df_novos_parados.empty:
+            st.success("🎉 Nenhum lead novo sem atendimento! Todos os leads recentes já receberam o primeiro contato.")
+        else:
+            st.error(f"⚠️ Atenção: Existem **{len(df_novos_parados)} leads novos** que entraram e **ainda não tiveram nenhum contato** registrado!")
+
+            def classificar_urgencia(minutos):
+                if minutos < 60:
+                    return "🟢 Recente (< 1h)"
+                elif minutos < 240:
+                    return "🟡 Atenção (1h a 4h)"
+                else:
+                    return "🔴 Crítico (> 4h sem contato)"
+
+            df_novos_parados['Urgência'] = df_novos_parados['Minutos_Aguardando'].apply(classificar_urgencia)
+
+            cols_novos_show = [
+                'Urgência', 'Tempo_Aguardando_Texto', 'Nome Cliente', 'Celular_Limpo',
+                'Corretor', 'Recebido em', 'Origem (Tipo Mídia)', 'Campanha'
+            ]
+            st.dataframe(df_novos_parados[cols_novos_show].rename(columns={
+                'Tempo_Aguardando_Texto': 'Tempo de Espera',
+                'Nome Cliente': 'Cliente',
+                'Celular_Limpo': 'Celular'
+            }), use_container_width=True, hide_index=True)
+
+            # Cobrança direta por corretor para leads recém-chegados
+            corretores_com_novos = sorted(df_novos_parados['Corretor'].dropna().unique().tolist())
+            if corretores_com_novos:
+                st.markdown("#### ⚡ Cobrar Corretor Imediatamente (WhatsApp)")
+                col_n1, col_n2 = st.columns([1, 2])
+                with col_n1:
+                    corr_cobrar_novo = st.selectbox("Escolha o Corretor para cobrar:", corretores_com_novos, key="sel_corr_novo")
+                
+                df_corr_novos = df_novos_parados[df_novos_parados['Corretor'] == corr_cobrar_novo]
+                msg_urgente = f"Fala, *{corr_cobrar_novo}*! Tudo bem?\n\n⚠️ Tem lead NOVO que acabou de entrar na sua roleta e ainda consta *sem primeiro contato* no CRM:\n\n"
+                for _, r_n in df_corr_novos.iterrows():
+                    msg_urgente += f"• *{r_n['Nome Cliente']}* - {r_n['Celular_Limpo']} (Entrou {r_n['Tempo_Aguardando_Texto']})\n"
+                msg_urgente += "\nConsegue chamar eles agora antes que o cliente esfrie? Valeu!"
+
+                with col_n2:
+                    render_botao_copiar(msg_urgente, f"📋 Copiar Cobrança Urgente para {corr_cobrar_novo}")
+
+        st.markdown("---")
+
+        # SEÇÃO 2: MOVIMENTAÇÕES DE UMA DATA ESPECÍFICA
+        st.markdown("### 📅 Histórico de Ações por Data no CRM")
         col_dia1, col_dia2 = st.columns([1, 2])
         with col_dia1:
-            data_escolhida = st.date_input("Selecione a data para auditar:", value=datetime.date.today(), key="sel_data_mov_dia")
+            data_escolhida = st.date_input("Selecione a data para auditar o que foi feito:", value=datetime.date.today(), key="sel_data_mov_dia")
             data_str_comparar = data_escolhida.strftime("%Y-%m-%d")
 
-        # Função para verificar se houve ação na data
         def lead_movimentado_na_data(row):
             dt_contato = parse_data_segura(row.get('Último Contato em'))
             dt_perdido = parse_data_segura(row.get('Negócio Perdido em'))
             dt_recebido = parse_data_segura(row.get('Recebido em'))
 
-            # Compara datas
             contato_no_dia = (dt_contato.strftime("%Y-%m-%d") == data_str_comparar) if dt_contato else False
             perda_no_dia = (dt_perdido.strftime("%Y-%m-%d") == data_str_comparar) if dt_perdido else False
             entrada_no_dia = (dt_recebido.strftime("%Y-%m-%d") == data_str_comparar) if dt_recebido else False
@@ -360,15 +436,13 @@ if arquivo_atual:
             )
 
         if df_mov_dia.empty:
-            st.warning(f"Nenhum registro com data de atualização em **{data_escolhida.strftime('%d/%m/%Y')}** localizado nesta planilha.")
-            st.info("💡 Dica: Verifique se o relatório que você subiu contém atendimentos registrados para essa data específica.")
+            st.info(f"Nenhum registro com data de atualização em **{data_escolhida.strftime('%d/%m/%Y')}** localizado nesta planilha.")
         else:
-            st.markdown("---")
             st.markdown("#### 👥 Produtividade dos Corretores Nesta Data")
             resumo_dia_corr = df_mov_dia.groupby(['Corretor', 'Acao_No_Dia']).size().unstack(fill_value=0)
             st.dataframe(resumo_dia_corr, use_container_width=True)
 
-            st.markdown(f"#### 📝 Lista de Leads Trabalhados em {data_escolhida.strftime('%d/%m/%Y')}")
+            st.markdown(f"#### 📝 Detalhamento de Leads Trabalhados em {data_escolhida.strftime('%d/%m/%Y')}")
             cols_dia_exibir = [
                 'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Acao_No_Dia',
                 'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Motivo Perda'
@@ -571,13 +645,13 @@ if arquivo_atual:
                         st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} gravados na nuvem e removidos da fila ativa.")
                         st.rerun()
 
-                    st.markdown("#### Detalhamento do Malote (Com Corretor Original)")
+                    st.markdown("#### Detalhes do Malote (Com Corretor Original)")
                     df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
                     st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
                 else:
                     st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (COMPARATIVO CRONOLÓGICO SEGURO) ---
+    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (CRONOLÓGICA) ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
         st.caption("Verificação cronológica: o corretor só é considerado como 'Trabalhado' se a data do CRM for MAIS RECENTE que a data de envio do malote.")
@@ -595,11 +669,9 @@ if arquivo_atual:
                 etapa_crm_agora = str(row.get('Etapa do Funil', '')).strip()
                 etapa_original_envio = str(row.get('etapa_ao_enviar', '')).strip()
 
-                # Mais recente das ações do corretor
                 datas_acao = [d for d in [data_contato_dt, data_perdido_dt] if d is not None]
                 ultima_acao_crm = max(datas_acao) if datas_acao else None
 
-                # Verificação se a ação no CRM foi feita DEPOIS do malote ter sido enviado
                 interagiu_depois = False
                 if data_envio_dt and ultima_acao_crm:
                     if ultima_acao_crm > data_envio_dt:
