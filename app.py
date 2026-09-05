@@ -9,7 +9,7 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para interface limpa
+# CSS para garantir quebra limpa
 st.markdown("""
 <style>
     div[data-baseweb="tab-list"] {
@@ -217,6 +217,17 @@ def parse_data_segura(val):
     except:
         return None
 
+def formatar_tempo_passado(minutos_totais):
+    if minutos_totais < 60:
+        return f"{int(minutos_totais)} min atrás"
+    horas = int(minutos_totais // 60)
+    mins = int(minutos_totais % 60)
+    if horas < 24:
+        return f"{horas}h {mins}min atrás"
+    dias = int(horas // 24)
+    horas_rest = int(horas % 24)
+    return f"{dias}d {horas_rest}h atrás"
+
 def preparar_dataframe(df_raw):
     df = df_raw.copy()
     df['Celular_Limpo'] = df['Celular Cliente'].apply(limpar_celular)
@@ -249,6 +260,19 @@ def preparar_dataframe(df_raw):
         else:
             return "Mais de 10 dias"
     df['Faixa_Atraso'] = df['Dias_Sem_Interacao'].apply(faixa_dias)
+
+    def status_lead_novo(row):
+        dt_recebido = row.get('Recebido_DT')
+        tem_1o_contato = pd.notna(row.get('Primeiro_Contato_DT'))
+        etapa = str(row.get('Etapa do Funil', '')).strip()
+
+        if (not tem_1o_contato) and etapa not in ['Perdido', 'Visita Cancelada']:
+            if dt_recebido:
+                minutos = max(0, (hoje - dt_recebido).total_seconds() / 60.0)
+                return pd.Series([True, minutos, formatar_tempo_passado(minutos)])
+        return pd.Series([False, None, "Já Atendido"])
+
+    df[['Lead_Novo_Sem_Contato', 'Minutos_Aguardando', 'Tempo_Aguardando_Texto']] = df.apply(status_lead_novo, axis=1)
     return df
 
 st.title("Gestão Comercial & Retrabalho de Leads")
@@ -688,18 +712,16 @@ if arquivo_atual:
             cols_show_cart = ['Nome Cliente', 'Celular_Limpo', 'Status_Auditoria', 'data_ultima_cobranca', 'Último Contato em', 'Etapa do Funil', 'Descrição Último Contato']
             st.dataframe(df_view_cart[cols_show_cart], use_container_width=True, hide_index=True)
 
-    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (CRUZAMENTO COM BLOCKLIST + RESGATES) ---
+    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (BLOCKLIST + RESGATES) ---
     elif modulo_ativo == "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)":
         st.subheader("Métrica de Ouro: Eficiência do Retrabalho por Corretor")
         st.caption("Avalia o retorno real dos leads perdidos redistribuídos: 1) Resgates vivos (viraram Atendimento/Visita no CRM); 2) Base limpa (leads qualificados que foram para a Blocklist).")
 
-        # Puxa histórico de envios de recuperação do Google Sheets
         df_hist_recup = df_hist[df_hist['tipo_lead_envio'] == "Perdidos Redistribuídos"].copy()
 
         if df_hist_recup.empty:
             st.info("Nenhum malote de recuperação foi redistribuído e salvo na planilha até o momento.")
         else:
-            # Cruzamento com a base atual do CRM e com a Blocklist
             telefones_bloq_dict = dict(zip(df_bloqueados['celular'].astype(str), df_bloqueados['motivo_cancelamento'])) if not df_bloqueados.empty else {}
             crm_leads_dict = df.set_index('lead_key').to_dict('index') if not df.empty else {}
 
@@ -709,7 +731,6 @@ if arquivo_atual:
                 novo_dono = str(row['corretor_cobrado']).strip()
                 orig_dono = str(row['corretor_original']).strip()
 
-                # 1. Checa se o lead foi colocado na Blocklist (Base Limpa)
                 if cel in telefones_bloq_dict:
                     motivo_b = telefones_bloq_dict[cel]
                     return pd.Series([
@@ -718,13 +739,11 @@ if arquivo_atual:
                         "Limpeza de Base"
                     ])
 
-                # 2. Checa no CRM se o lead ressuscitou (saiu de Perdido ou mudou de dono)
                 if key in crm_leads_dict:
                     crm_info = crm_leads_dict[key]
                     etapa_atual = str(crm_info.get('Etapa do Funil', '')).strip()
                     dono_crm_atual = str(crm_info.get('Corretor', '')).strip()
 
-                    # Se avançou para atendimento ou visita
                     if etapa_atual not in ['Perdido', 'Visita Cancelada', 'Visita - Cliente Não Compareceu']:
                         return pd.Series([
                             "🎯 Resgatado com Sucesso!",
@@ -738,7 +757,6 @@ if arquivo_atual:
                             "Resgate Ativo"
                         ])
 
-                # 3. Feedback manual se houver
                 fb = str(row.get('feedback_recuperacao', '')).strip()
                 if fb not in ['None', 'N/A', 'Aguardando Retorno', '']:
                     return pd.Series([
@@ -755,7 +773,6 @@ if arquivo_atual:
 
             df_hist_recup[['Status_Retrabalho', 'Detalhes_Resultado', 'Categoria_Metrica']] = df_hist_recup.apply(diagnosticar_resultado_retrabalho, axis=1)
 
-            # Métricas Globais de Retrabalho
             total_redistribuido = len(df_hist_recup)
             total_resgatados = len(df_hist_recup[df_hist_recup['Categoria_Metrica'] == "Resgate Ativo"])
             total_limpos = len(df_hist_recup[df_hist_recup['Categoria_Metrica'] == "Limpeza de Base"])
@@ -770,7 +787,7 @@ if arquivo_atual:
 
             st.markdown("---")
 
-            # PLACAR POR CORRETOR QUE RECEBEU O RETRABALHO
+            # PLACAR POR CORRETOR DESTINATÁRIO
             st.markdown("### 🏆 Placar de Eficiência do Retrabalho por Corretor Destinatário")
             st.caption("Mede o aproveitamento de cada corretor ao receber listas de leads frios/perdidos.")
 
@@ -1130,7 +1147,7 @@ if arquivo_atual:
     # --- MÓDULO 9: BLOQUEIO DE LEADS ---
     elif modulo_ativo == "🚫 Bloqueio de Leads":
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
-        st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
+        st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados, acharam caro ou não gostaram da localização.")
 
         col_b1, col_b2 = st.columns([1, 1])
 
@@ -1163,6 +1180,8 @@ if arquivo_atual:
             motivo_cancel = st.selectbox(
                 "Motivo do Bloqueio:",
                 [
+                    "Achou o valor alto / Fora do orçamento",
+                    "Não gostou da localização / Muito longe",
                     "Já comprou de concorrente",
                     "Pediu para não entrar em contato",
                     "Número errado / Inexistente",
@@ -1200,4 +1219,3 @@ if arquivo_atual:
 
 else:
     st.info("Faça o upload do relatório diário na barra lateral para iniciar.")
-
