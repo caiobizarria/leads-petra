@@ -9,31 +9,6 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para quebrar abas em 2 linhas (evita scroll lateral infinito)
-st.markdown("""
-<style>
-    div[data-baseweb="tab-list"] {
-        flex-wrap: wrap !important;
-        gap: 6px !important;
-        border-bottom: 2px solid #e6e6e6 !important;
-    }
-    button[data-baseweb="tab"] {
-        background-color: #f8f9fa !important;
-        border: 1px solid #dee2e6 !important;
-        border-radius: 6px 6px 0 0 !important;
-        padding: 8px 14px !important;
-        font-weight: 500 !important;
-        font-size: 13.5px !important;
-        white-space: nowrap !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        background-color: #ffffff !important;
-        border-bottom: 2px solid #ff4b4b !important;
-        font-weight: bold !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # --- CONEXÃO GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -244,7 +219,6 @@ def preparar_dataframe(df_raw):
     df['Motivo Perda'] = df['Motivo Perda'].fillna("Não informado")
     df['Tipo_Lead'] = df.apply(classificar_tipo, axis=1)
     
-    # Extração de datas em formato datetime
     df['Recebido_DT'] = df['Recebido em'].apply(parse_data_segura)
     df['Ultimo_Contato_DT'] = df['Último Contato em'].apply(parse_data_segura)
     df['Primeiro_Contato_DT'] = df['Data Primeiro Contato'].apply(parse_data_segura)
@@ -269,7 +243,6 @@ def preparar_dataframe(df_raw):
             return "Mais de 10 dias"
     df['Faixa_Atraso'] = df['Dias_Sem_Interacao'].apply(faixa_dias)
 
-    # Identifica se é lead novo sem contato
     def status_lead_novo(row):
         dt_recebido = row.get('Recebido_DT')
         tem_1o_contato = pd.notna(row.get('Primeiro_Contato_DT'))
@@ -286,12 +259,30 @@ def preparar_dataframe(df_raw):
 
 st.title("Gestão Comercial & Retrabalho de Leads")
 
+# --- BARRA LATERAL: ARQUIVOS & NAVEGAÇÃO 100% VISÍVEL ---
 st.sidebar.markdown("### 📁 Relatórios do CRM")
 arquivo_atual = st.sidebar.file_uploader("1. Relatório Atual / Mais Recente (.xlsx)", type=["xlsx"])
 arquivo_anterior = st.sidebar.file_uploader("2. Relatório Anterior (Opcional p/ Comparar)", type=["xlsx"])
 
 st.sidebar.markdown("---")
-st.sidebar.success("☁️ Conectado ao Google Sheets (Persistência Permanente)")
+st.sidebar.markdown("### 📌 Módulos do Sistema")
+
+OPCOES_MODULOS = [
+    "📊 Visão Geral",
+    "⚡ Movimentações & Leads por Data",
+    "1. Aguardando 1ª Interação", 
+    "2. Em Atendimento", 
+    "3. Visitas & Fechamento",
+    "4. Fila de Recuperação",
+    "5. Auditoria de Malotes (Google Sheets)",
+    "6. Comparador de Planilhas (Raio-X)",
+    "📑 Central de Relatórios",
+    "🚫 Bloqueio de Leads"
+]
+
+modulo_ativo = st.sidebar.radio("Navegação:", OPCOES_MODULOS, index=0, label_visibility="collapsed")
+st.sidebar.markdown("---")
+st.sidebar.success("☁️ Google Sheets Conectado")
 
 if arquivo_atual:
     df_crm_atual = pd.read_excel(arquivo_atual, sheet_name=0)
@@ -316,22 +307,8 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    # ABAS (Com CSS para 2 linhas na tela)
-    aba_visao, aba_dia, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
-        "📊 Visão Geral",
-        "⚡ Movimentações & Leads por Data",
-        "1. Aguardando 1ª Interação", 
-        "2. Em Atendimento", 
-        "3. Visitas & Fechamento",
-        "4. Fila de Recuperação",
-        "5. Auditoria de Malotes",
-        "6. Comparador de Planilhas",
-        "📑 Relatórios Executivos",
-        "8. Bloqueio de Leads"
-    ])
-
-    # --- ABA 1: VISÃO GERAL ---
-    with aba_visao:
+    # --- MÓDULO 1: VISÃO GERAL ---
+    if modulo_ativo == "📊 Visão Geral":
         st.subheader("Panorama Consolidado da Base Importada")
         st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio, motivos de perda e corretores.")
 
@@ -376,12 +353,11 @@ if arquivo_atual:
         df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
         st.dataframe(df_dist_corr, use_container_width=True)
 
-    # --- ABA 2: MOVIMENTAÇÕES & ENTRADAS POR DATA (CORRIGIDA) ---
-    with aba_dia:
+    # --- MÓDULO 2: MOVIMENTAÇÕES & ENTRADAS POR DATA ---
+    elif modulo_ativo == "⚡ Movimentações & Leads por Data":
         st.subheader("⚡ Auditoria Diária: O que Entrou e o que foi Movimentado")
         st.caption("Filtre uma data exata para auditar: 1) Quais leads novos caíram e quem os recebeu; 2) Quais contatos foram feitos no CRM naquele dia.")
 
-        # Extração de datas disponíveis na planilha para facilitar a seleção
         datas_disponiveis = sorted(list(set(df['Recebido_DT'].dropna().dt.date.tolist() + df['Ultimo_Contato_DT'].dropna().dt.date.tolist())), reverse=True)
         data_padrao = datas_disponiveis[0] if datas_disponiveis else datetime.date.today()
 
@@ -389,11 +365,9 @@ if arquivo_atual:
         with col_d1:
             data_selecionada = st.date_input("Escolha a data para auditar:", value=data_padrao, key="sel_data_audit_dia")
 
-        # 1. LEADS QUE ENTRARAM NESTA DATA
         df['Entrou_No_Dia'] = df['Recebido_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
         df_entradas_dia = df[df['Entrou_No_Dia']].copy()
 
-        # 2. LEADS QUE TIVERAM CONTATO OU FORAM PERDIDOS NESTA DATA
         df['Contatado_No_Dia'] = df['Ultimo_Contato_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
         df['Perdido_No_Dia'] = df['Perdido_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
         df_acoes_dia = df[df['Contatado_No_Dia'] | df['Perdido_No_Dia']].copy()
@@ -406,7 +380,6 @@ if arquivo_atual:
             k3.metric("Descartados no Dia", len(df_acoes_dia[df_acoes_dia['Perdido_No_Dia']]))
 
         st.markdown("---")
-
         sub_d1, sub_d2 = st.tabs(["📥 1. Leads que Entraram Nesta Data", "📞 2. Leads com Contato/Ação Nesta Data"])
 
         with sub_d1:
@@ -414,8 +387,6 @@ if arquivo_atual:
                 st.info(f"Nenhum lead com data de entrada (`Recebido em`) registrada em {data_selecionada.strftime('%d/%m/%Y')}.")
             else:
                 st.markdown(f"#### Foram recebidos **{len(df_entradas_dia)} leads** em {data_selecionada.strftime('%d/%m/%Y')}:")
-                
-                # Resumo de distribuição por corretor
                 dist_novos = df_entradas_dia.groupby('Corretor').agg(
                     Total_Recebido=('Nome Cliente', 'count'),
                     Sem_1o_Contato=('Data Primeiro Contato', lambda s: s.isna().sum()),
@@ -423,7 +394,6 @@ if arquivo_atual:
                 ).reset_index()
                 st.dataframe(dist_novos, use_container_width=True, hide_index=True)
 
-                # Tabela detalhada
                 cols_entradas = [
                     'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Recebido em',
                     'Data Primeiro Contato', 'Tempo Primeiro Contato', 'Etapa do Funil', 'Origem (Tipo Mídia)'
@@ -436,12 +406,10 @@ if arquivo_atual:
                 })
                 st.dataframe(df_ent_show, use_container_width=True, hide_index=True)
 
-                # Cobrança de leads sem atendimento recebidos na data
                 sem_atend = df_entradas_dia[df_entradas_dia['Data Primeiro Contato'].isna()]
                 if not sem_atend.empty:
                     st.warning(f"⚠️ Desses {len(df_entradas_dia)} leads, **{len(sem_atend)} ainda não tiveram o 1º contato**!")
                     corr_cobrar_d = st.selectbox("Escolha um corretor para cobrar os leads recebidos:", sorted(sem_atend['Corretor'].dropna().unique()), key="sel_cob_d_dia")
-                    
                     df_c_sem = sem_atend[sem_atend['Corretor'] == corr_cobrar_d]
                     msg_d = f"Olá, *{corr_cobrar_d}*! Tudo bem?\n\nIdentificamos estes leads que entraram na sua roleta em {data_selecionada.strftime('%d/%m/%Y')} e continuam *sem primeiro contato registrado*:\n\n"
                     for _, r in df_c_sem.iterrows():
@@ -456,8 +424,6 @@ if arquivo_atual:
                 st.info(f"Nenhum atendimento ou alteração registrada no CRM com data de {data_selecionada.strftime('%d/%m/%Y')}.")
             else:
                 st.markdown(f"#### Foram movimentados **{len(df_acoes_dia)} leads** no CRM em {data_selecionada.strftime('%d/%m/%Y')}:")
-                
-                # Resumo por corretor
                 resumo_acao_corr = df_acoes_dia.groupby(['Corretor', 'Etapa do Funil']).size().unstack(fill_value=0)
                 st.dataframe(resumo_acao_corr, use_container_width=True)
 
@@ -472,7 +438,7 @@ if arquivo_atual:
                 })
                 st.dataframe(df_acoes_show, use_container_width=True, hide_index=True)
 
-    # --- PAINEL PADRÃO PARA CORRETOR FIXO (ABAS 1, 2 E 3) ---
+    # --- PAINEL PADRÃO PARA CORRETOR FIXO ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
         st.subheader(f"{titulo_aba} (Cobrança do Corretor Responsável)")
         df_ativos = df_tipo[~df_tipo['Lead_Bloqueado']].copy()
@@ -551,20 +517,21 @@ if arquivo_atual:
         st.markdown("#### Detalhamento dos Leads Deste Malote")
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
-    with aba1:
+    # --- MÓDULOS OPERACIONAIS (1, 2, 3) ---
+    if modulo_ativo == "1. Aguardando 1ª Interação":
         df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
-        renderizar_painel_corretor_fixo(df_1, "aba1", "Aguardando 1ª Interação")
+        renderizar_painel_corretor_fixo(df_1, "m1", "Aguardando 1ª Interação")
 
-    with aba2:
+    elif modulo_ativo == "2. Em Atendimento":
         df_2 = df[df['Tipo_Lead'] == "2. Em Atendimento"]
-        renderizar_painel_corretor_fixo(df_2, "aba2", "Em Atendimento")
+        renderizar_painel_corretor_fixo(df_2, "m2", "Em Atendimento")
 
-    with aba_visitas:
+    elif modulo_ativo == "3. Visitas & Fechamento":
         df_vis = df[df['Tipo_Lead'] == "3. Visitas & Fechamento"]
-        renderizar_painel_corretor_fixo(df_vis, "aba_visitas", "Visitas & Fechamento")
+        renderizar_painel_corretor_fixo(df_vis, "m3", "Visitas & Fechamento")
 
-    # --- ABA 4: PERDIDOS PARA RECUPERAÇÃO ---
-    with aba3:
+    # --- MÓDULO 4: FILA DE RECUPERAÇÃO ---
+    elif modulo_ativo == "4. Fila de Recuperação":
         st.subheader("Fila de Recuperação (Apenas: Tentativas de Contato Sem Sucesso)")
         st.caption("Leads arquivados sem resposta. Registre a redistribuição para salvá-los no Google Sheets e retirá-los da fila ativa.")
         
@@ -668,8 +635,8 @@ if arquivo_atual:
                 else:
                     st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    # --- ABA 5: AUDITORIA DE MALOTES (GOOGLE SHEETS) ---
-    with aba4:
+    # --- MÓDULO 5: AUDITORIA DE MALOTES ---
+    elif modulo_ativo == "5. Auditoria de Malotes (Google Sheets)":
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
         st.caption("Verificação cronológica: o corretor só é considerado como 'Trabalhado' se a data do CRM for MAIS RECENTE que a data de envio do malote.")
 
@@ -784,8 +751,8 @@ if arquivo_atual:
             else:
                 st.success(f"🎉 Excelente! **{corretor_selecionado}** já iniciou contato com 100% dos leads que foram entregues a ele(a).")
 
-    # --- ABA 6: COMPARADOR DE PLANILHAS (RAIO-X DETALHADO POR CORRETOR) ---
-    with aba5:
+    # --- MÓDULO 6: COMPARADOR DE PLANILHAS ---
+    elif modulo_ativo == "6. Comparador de Planilhas (Raio-X)":
         st.subheader("Raio-X de Modificações por Corretor (Planilha Anterior vs. Atual)")
         st.caption("Descubra exatamente quais alterações de etapa, novos contatos e anotações cada corretor realizou no CRM entre os dois relatórios.")
 
@@ -969,8 +936,8 @@ if arquivo_atual:
 
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
-    # --- ABA 7: CENTRAL DE RELATÓRIOS (CORRETOR & LOTEADORA) ---
-    with aba_relatorios:
+    # --- MÓDULO 7: CENTRAL DE RELATÓRIOS ---
+    elif modulo_ativo == "📑 Central de Relatórios":
         st.subheader("Central de Relatórios Executivos")
         st.caption("Gere visões personalizadas: uma voltada para o corretor acompanhar sua carteira e outra para a loteadora avaliar o ROI e funil macro.")
 
@@ -1079,7 +1046,10 @@ if arquivo_atual:
                 perf_loteadora.to_excel(writer, index=False, sheet_name="Resumo_Corretores")
                 if 'Origem (Tipo Mídia)' in df.columns:
                     orig_grp.to_excel(writer, index=False, sheet_name="Origem_Midia")
-                if total_perdas > 0:
+                total_perdas_lot = len(df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')])
+                if total_perdas_lot > 0:
+                    loss_counts = df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')]['Motivo Perda'].value_counts().reset_index()
+                    loss_counts.columns = ['Motivo de Perda', 'Quantidade']
                     loss_counts.to_excel(writer, index=False, sheet_name="Motivos_Perda")
             st.download_button(
                 label="📥 Baixar Dossiê Executivo da Loteadora (.xlsx)",
@@ -1088,8 +1058,8 @@ if arquivo_atual:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-    # --- ABA 8: CANCELAR / BLOQUEAR LEADS ---
-    with aba6:
+    # --- MÓDULO 8: BLOQUEIO DE LEADS ---
+    elif modulo_ativo == "🚫 Bloqueio de Leads":
         st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
         st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados ou não têm interesse.")
 
