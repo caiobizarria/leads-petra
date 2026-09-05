@@ -9,7 +9,7 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para garantir quebra limpa
+# CSS para interface limpa
 st.markdown("""
 <style>
     div[data-baseweb="tab-list"] {
@@ -269,7 +269,7 @@ OPCOES_MODULOS = [
     "3. Visitas & Fechamento",
     "4. Fila de Recuperação (Redistribuir)",
     "🎯 Auditoria: Cobrança de Carteira",
-    "🔄 Auditoria: Fila de Recuperação",
+    "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)",
     "6. Comparador de Planilhas (Raio-X)",
     "📑 Central de Relatórios",
     "🚫 Bloqueio de Leads"
@@ -349,7 +349,7 @@ if arquivo_atual:
         df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
         st.dataframe(df_dist_corr, use_container_width=True)
 
-    # --- MÓDULO 2: MOVIMENTAÇÕES & ENTRADAS POR DATA ---
+    # --- MÓDULO 2: MOVIMENTAÇÕES POR DATA ---
     elif modulo_ativo == "⚡ Movimentações & Leads por Data":
         st.subheader("⚡ Auditoria Diária: O que Entrou e o que foi Movimentado")
         st.caption("Filtre uma data exata para auditar: 1) Quais leads novos caíram e quem os recebeu; 2) Quais contatos foram feitos no CRM naquele dia.")
@@ -401,19 +401,6 @@ if arquivo_atual:
                     'Tempo Primeiro Contato': 'Demora no 1º Contato'
                 })
                 st.dataframe(df_ent_show, use_container_width=True, hide_index=True)
-
-                sem_atend = df_entradas_dia[df_entradas_dia['Data Primeiro Contato'].isna()]
-                if not sem_atend.empty:
-                    st.warning(f"⚠️ Desses {len(df_entradas_dia)} leads, **{len(sem_atend)} ainda não tiveram o 1º contato**!")
-                    corr_cobrar_d = st.selectbox("Escolha um corretor para cobrar os leads recebidos:", sorted(sem_atend['Corretor'].dropna().unique()), key="sel_cob_d_dia")
-                    df_c_sem = sem_atend[sem_atend['Corretor'] == corr_cobrar_d]
-                    msg_d = f"Olá, *{corr_cobrar_d}*! Tudo bem?\n\nIdentificamos estes leads que entraram na sua roleta em {data_selecionada.strftime('%d/%m/%Y')} e continuam *sem primeiro contato registrado*:\n\n"
-                    for _, r in df_c_sem.iterrows():
-                        msg_d += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
-                    msg_d += "\nConsegue dar prioridade e fazer esse contato inicial agora? Obrigado!"
-                    
-                    render_botao_copiar(msg_d, f"📋 Copiar Cobrança para {corr_cobrar_d}")
-                    st.code(msg_d, language="text")
 
         with sub_d2:
             if df_acoes_dia.empty:
@@ -634,7 +621,7 @@ if arquivo_atual:
     # --- MÓDULO 5: AUDITORIA DE COBRANÇA DE CARTEIRA (AUTOMÁTICA VIA CRM) ---
     elif modulo_ativo == "🎯 Auditoria: Cobrança de Carteira":
         st.subheader("Auditoria de Cobrança de Carteira (1º Contato & Atendimento)")
-        st.caption("Como estes leads já pertencem ao corretor no CRM, a verificação é 100% cronológica: checamos se ele registrou contato no Latitude APÓS você ter enviado a lista.")
+        st.caption("Estes leads já pertencem ao corretor no CRM. Verificação cronológica: checamos se ele registrou contato no Latitude APÓS o envio da cobrança.")
 
         df_enviados_carteira = df[(df['Status_Cobranca'] == "Já Cobrado/Passado") & (df['tipo_lead_envio'] != "Perdidos Redistribuídos")].copy()
 
@@ -701,70 +688,150 @@ if arquivo_atual:
             cols_show_cart = ['Nome Cliente', 'Celular_Limpo', 'Status_Auditoria', 'data_ultima_cobranca', 'Último Contato em', 'Etapa do Funil', 'Descrição Último Contato']
             st.dataframe(df_view_cart[cols_show_cart], use_container_width=True, hide_index=True)
 
-    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (REDISTRIBUIÇÃO) ---
-    elif modulo_ativo == "🔄 Auditoria: Fila de Recuperação":
-        st.subheader("Auditoria da Fila de Recuperação (Leads Redistribuídos)")
-        st.caption("Como esses leads foram transferidos para outro corretor por fora do Latitude, aqui controlamos se o novo corretor deu retorno e se o lead foi reativado no CRM.")
+    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (CRUZAMENTO COM BLOCKLIST + RESGATES) ---
+    elif modulo_ativo == "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)":
+        st.subheader("Métrica de Ouro: Eficiência do Retrabalho por Corretor")
+        st.caption("Avalia o retorno real dos leads perdidos redistribuídos: 1) Resgates vivos (viraram Atendimento/Visita no CRM); 2) Base limpa (leads qualificados que foram para a Blocklist).")
 
-        df_enviados_recup = df[(df['Status_Cobranca'] == "Já Cobrado/Passado") & (df['tipo_lead_envio'] == "Perdidos Redistribuídos")].copy()
+        # Puxa histórico de envios de recuperação do Google Sheets
+        df_hist_recup = df_hist[df_hist['tipo_lead_envio'] == "Perdidos Redistribuídos"].copy()
 
-        if df_enviados_recup.empty:
-            st.info("Nenhum registro de redistribuição de perdidos localizado na planilha do Google Sheets até o momento.")
+        if df_hist_recup.empty:
+            st.info("Nenhum malote de recuperação foi redistribuído e salvo na planilha até o momento.")
         else:
-            # Verifica se no CRM houve reativação automática
-            def checar_status_recuperacao(row):
-                dono_crm = str(row.get('Corretor', '')).strip()
-                novo_dono = str(row.get('corretor_cobrado', '')).strip()
-                etapa_crm = str(row.get('Etapa do Funil', '')).strip()
-                fb_manual = str(row.get('feedback_recuperacao', 'Aguardando Retorno')).strip()
+            # Cruzamento com a base atual do CRM e com a Blocklist
+            telefones_bloq_dict = dict(zip(df_bloqueados['celular'].astype(str), df_bloqueados['motivo_cancelamento'])) if not df_bloqueados.empty else {}
+            crm_leads_dict = df.set_index('lead_key').to_dict('index') if not df.empty else {}
 
-                if etapa_crm not in ['Perdido', 'Visita Cancelada', 'Visita - Cliente Não Compareceu']:
-                    return "🎯 Reativado com Sucesso no CRM!"
-                elif dono_crm == novo_dono and etapa_crm != 'Perdido':
-                    return "🎯 Titularidade Alterada & Ativo no CRM"
-                elif fb_manual != 'N/A' and fb_manual != 'None' and fb_manual != "":
-                    return fb_manual
-                return "Aguardando Retorno do Corretor"
+            def diagnosticar_resultado_retrabalho(row):
+                key = str(row['lead_key'])
+                cel = str(row['celular'])
+                novo_dono = str(row['corretor_cobrado']).strip()
+                orig_dono = str(row['corretor_original']).strip()
 
-            df_enviados_recup['Diagnóstico_Recuperação'] = df_enviados_recup.apply(checar_status_recuperacao, axis=1)
+                # 1. Checa se o lead foi colocado na Blocklist (Base Limpa)
+                if cel in telefones_bloq_dict:
+                    motivo_b = telefones_bloq_dict[cel]
+                    return pd.Series([
+                        "🧹 Base Limpa (Blocklist)",
+                        f"Descarte Qualificado por {novo_dono}: {motivo_b}",
+                        "Limpeza de Base"
+                    ])
 
-            r1, r2, r3 = st.columns(3)
-            r1.metric("Total Redistribuídos", len(df_enviados_recup))
-            r2.metric("Reativados no CRM", len(df_enviados_recup[df_enviados_recup['Diagnóstico_Recuperação'].str.contains("🎯")]))
-            r3.metric("Aguardando Retorno", len(df_enviados_recup[df_enviados_recup['Diagnóstico_Recuperação'] == "Aguardando Retorno do Corretor"]))
+                # 2. Checa no CRM se o lead ressuscitou (saiu de Perdido ou mudou de dono)
+                if key in crm_leads_dict:
+                    crm_info = crm_leads_dict[key]
+                    etapa_atual = str(crm_info.get('Etapa do Funil', '')).strip()
+                    dono_crm_atual = str(crm_info.get('Corretor', '')).strip()
+
+                    # Se avançou para atendimento ou visita
+                    if etapa_atual not in ['Perdido', 'Visita Cancelada', 'Visita - Cliente Não Compareceu']:
+                        return pd.Series([
+                            "🎯 Resgatado com Sucesso!",
+                            f"Saiu de {orig_dono} ➔ Foi para {novo_dono} (Etapa: {etapa_atual})",
+                            "Resgate Ativo"
+                        ])
+                    elif dono_crm_atual == novo_dono and etapa_atual != 'Perdido':
+                        return pd.Series([
+                            "🎯 Transferido & Reativado",
+                            f"Titularidade assumida por {novo_dono} no CRM",
+                            "Resgate Ativo"
+                        ])
+
+                # 3. Feedback manual se houver
+                fb = str(row.get('feedback_recuperacao', '')).strip()
+                if fb not in ['None', 'N/A', 'Aguardando Retorno', '']:
+                    return pd.Series([
+                        f"💬 {fb}",
+                        f"Retorno do corretor {novo_dono}",
+                        "Em Andamento"
+                    ])
+
+                return pd.Series([
+                    "⏳ Aguardando Retorno / Sem Ação",
+                    f"Lead entregue para {novo_dono}, sem alteração no CRM ou Blocklist",
+                    "Pendente"
+                ])
+
+            df_hist_recup[['Status_Retrabalho', 'Detalhes_Resultado', 'Categoria_Metrica']] = df_hist_recup.apply(diagnosticar_resultado_retrabalho, axis=1)
+
+            # Métricas Globais de Retrabalho
+            total_redistribuido = len(df_hist_recup)
+            total_resgatados = len(df_hist_recup[df_hist_recup['Categoria_Metrica'] == "Resgate Ativo"])
+            total_limpos = len(df_hist_recup[df_hist_recup['Categoria_Metrica'] == "Limpeza de Base"])
+            total_resolvidos = total_resgatados + total_limpos
+            taxa_eficiencia = (total_resolvidos / total_redistribuido * 100) if total_redistribuido > 0 else 0
+
+            m_r1, m_r2, m_r3, m_r4 = st.columns(4)
+            m_r1.metric("Leads Perdidos Redistribuídos", total_redistribuido)
+            m_r2.metric("🎯 Resgatados no CRM", total_resgatados, help="Saíram de Perdido e viraram Atendimento ou Visita")
+            m_r3.metric("🧹 Base Limpa (Blocklist)", total_limpos, help="Corretor confirmou descarte definitivo e limpamos a base")
+            m_r4.metric("Taxa de Resolução Real", f"{taxa_eficiencia:.1f}%", help="% de leads que saíram do limbo (Resgates + Limpeza)")
 
             st.markdown("---")
-            st.markdown("### 📋 Painel de Devolutiva por Corretor Destinatário")
-            corretor_dest_recup = st.selectbox("Selecione o Novo Corretor que recebeu os leads:", sorted(df_enviados_recup['corretor_cobrado'].dropna().unique().tolist()), key="sel_recup_dest")
 
-            df_recup_corretor = df_enviados_recup[df_enviados_recup['corretor_cobrado'] == corretor_dest_recup].copy()
+            # PLACAR POR CORRETOR QUE RECEBEU O RETRABALHO
+            st.markdown("### 🏆 Placar de Eficiência do Retrabalho por Corretor Destinatário")
+            st.caption("Mede o aproveitamento de cada corretor ao receber listas de leads frios/perdidos.")
 
-            st.markdown(f"#### Leads entregues para **{corretor_dest_recup}** (Dono Original vs. Novo Dono):")
+            placar_corretores = []
+            for c_nome, c_grp in df_hist_recup.groupby('corretor_cobrado'):
+                tot_c = len(c_grp)
+                resg_c = len(c_grp[c_grp['Categoria_Metrica'] == "Resgate Ativo"])
+                limp_c = len(c_grp[c_grp['Categoria_Metrica'] == "Limpeza de Base"])
+                pend_c = len(c_grp[c_grp['Categoria_Metrica'] == "Pendente"])
+                resolv_c = resg_c + limp_c
+                taxa_c = (resolv_c / tot_c * 100) if tot_c > 0 else 0
+
+                blocos = int(taxa_c // 10)
+                barra_c = "█" * blocos + "░" * (10 - blocos)
+
+                if taxa_c >= 50:
+                    status_c = "🟢 Alta Resolução"
+                elif taxa_c >= 25:
+                    status_c = "🟡 Moderado"
+                else:
+                    status_c = "🔴 Fila Travada / Sem Retorno"
+
+                placar_corretores.append({
+                    'Novo Corretor (Destino)': c_nome,
+                    'Desempenho': status_c,
+                    'Eficiência': f"{barra_c} ({taxa_c:.0f}%)",
+                    'Total Recebido': tot_c,
+                    '🎯 Resgatados (CRM)': resg_c,
+                    '🧹 Base Limpa (Blocklist)': limp_c,
+                    '⏳ Ainda Sem Ação': pend_c,
+                    '% Resolução': f"{taxa_c:.1f}%"
+                })
+
+            df_placar_view = pd.DataFrame(placar_corretores).sort_values(by='🎯 Resgatados (CRM)', ascending=False)
+            st.dataframe(df_placar_view, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # AUDITORIA DETALHADA LEAD A LEAD
+            st.markdown("### 🔍 Detalhamento Lead a Lead: O que aconteceu com cada contato?")
             
-            # Form para registrar feedback rápido que salva no Google Sheets
-            with st.expander("✏️ Registrar Devolutiva / Feedback do Corretor (Salva no Google Sheets):"):
-                lead_alvo_fb = st.selectbox("Escolha o lead:", df_recup_corretor['lead_key'].tolist(), format_func=lambda x: f"{df_recup_corretor.loc[df_recup_corretor['lead_key']==x, 'Nome Cliente'].values[0]} ({df_recup_corretor.loc[df_recup_corretor['lead_key']==x, 'Celular_Limpo'].values[0]})")
-                novo_fb = st.selectbox("Qual foi o retorno do corretor?", [
-                    "📞 Em Contato / Falou com o Cliente",
-                    "❌ Sem interesse definitivo (Arquivar)",
-                    "⚠️ Tentou contato mas não atendeu",
-                    "🎯 Cliente quer agendar visita!"
-                ])
-                if st.button("Salvar Retorno na Planilha"):
-                    with st.spinner("Atualizando Google Sheets..."):
-                        atualizar_feedback_recuperacao(lead_alvo_fb, novo_fb)
-                    st.success("Retorno registrado com sucesso!")
-                    st.rerun()
+            corr_dest_filtro = st.selectbox(
+                "Filtrar por Corretor que recebeu os leads:",
+                ["Todos os Corretores"] + sorted(df_hist_recup['corretor_cobrado'].dropna().unique().tolist()),
+                key="sel_filtro_recup_detalhe"
+            )
 
-            cols_show_recup = [
-                'Nome Cliente', 'Celular_Limpo', 'corretor_original', 'corretor_cobrado',
-                'data_ultima_cobranca', 'Diagnóstico_Recuperação', 'Etapa do Funil', 'Motivo Perda'
+            df_recup_view = df_hist_recup if corr_dest_filtro == "Todos os Corretores" else df_hist_recup[df_hist_recup['corretor_cobrado'] == corr_dest_filtro]
+
+            cols_recup_show = [
+                'nome', 'celular', 'corretor_original', 'corretor_cobrado',
+                'data_ultima_cobranca', 'Status_Retrabalho', 'Detalhes_Resultado'
             ]
-            df_recup_display = df_recup_corretor[cols_show_recup].rename(columns={
-                'corretor_original': 'Corretor Anterior (Origem)',
-                'corretor_cobrado': 'Novo Corretor (Destino)',
-                'data_ultima_cobranca': 'Data de Entrega da Lista',
-                'Diagnóstico_Recuperação': 'Status Atual da Recuperação'
+            df_recup_display = df_recup_view[cols_recup_show].rename(columns={
+                'nome': 'Cliente',
+                'celular': 'Celular',
+                'corretor_original': 'Dono Anterior (Origem)',
+                'corretor_cobrado': 'Novo Dono (Destino)',
+                'data_ultima_cobranca': 'Data da Entrega',
+                'Status_Retrabalho': 'Resultado Atual',
+                'Detalhes_Resultado': 'Diagnóstico da Operação'
             })
             st.dataframe(df_recup_display, use_container_width=True, hide_index=True)
 
@@ -929,16 +996,6 @@ if arquivo_atual:
             else:
                 st.markdown(f"**Exibindo {len(df_feed)} leads:**")
 
-                if corretor_alvo_comp != "Todos os Corretores" and filtro_tipo_mov == "Apenas Leads Estagnados (Sem Ação)":
-                    msg_inercia = f"Olá, *{corretor_alvo_comp}*! Tudo bem?\n\nIdentificamos no CRM que estes leads da sua carteira continuam sem nenhuma atualização de contato recente:\n\n"
-                    for _, r_in in df_feed.head(15).iterrows():
-                        msg_inercia += f"• *{r_in['Nome_Exibicao']}* - {r_in['Celular_Exibicao']}\n"
-                    msg_inercia += "\nConsegue fazer uma rodada de contatos neles hoje e atualizar o CRM? Obrigado!"
-
-                    with st.expander("👁️ Mensagem pronta para cobrar este corretor sobre os estagnados:", expanded=False):
-                        render_botao_copiar(msg_inercia, f"📋 Copiar Cobrança de Estagnados para {corretor_alvo_comp}")
-                        st.code(msg_inercia, language="text")
-
                 df_feed_display = pd.DataFrame({
                     'Cliente': df_feed['Nome_Exibicao'],
                     'Celular': df_feed['Celular_Exibicao'],
@@ -950,7 +1007,6 @@ if arquivo_atual:
                     'Última Anotação no CRM': df_feed.get('Descrição Último Contato_atual', df_feed.get('Descrição Último Contato', '')),
                     'Data do Último Contato': df_feed.get('Último Contato em_atual', df_feed.get('Último Contato em', ''))
                 })
-
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
     # --- MÓDULO 8: CENTRAL DE RELATÓRIOS ---
@@ -1031,8 +1087,6 @@ if arquivo_atual:
                     ).reset_index()
                     orig_grp['% Conversão em Visita'] = (orig_grp['Visitas'] / orig_grp['Total_Leads'] * 100).map("{:.1f}%".format)
                     st.dataframe(orig_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Coluna de Origem não encontrada.")
 
             with col_lot2:
                 st.markdown("#### 🎯 Desempenho por Campanha de Tráfego")
@@ -1043,8 +1097,6 @@ if arquivo_atual:
                     ).reset_index()
                     camp_grp['% Visita'] = (camp_grp['Visitas'] / camp_grp['Total_Leads'] * 100).map("{:.1f}%".format)
                     st.dataframe(camp_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Coluna de Campanha não encontrada.")
 
             st.markdown("---")
             st.markdown("#### 🏆 Performance Geral dos Corretores para a Loteadora")
@@ -1148,3 +1200,4 @@ if arquivo_atual:
 
 else:
     st.info("Faça o upload do relatório diário na barra lateral para iniciar.")
+
