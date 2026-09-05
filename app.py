@@ -9,6 +9,31 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
+# CSS para quebrar abas em 2 linhas (evita scroll lateral infinito)
+st.markdown("""
+<style>
+    div[data-baseweb="tab-list"] {
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        border-bottom: 2px solid #e6e6e6 !important;
+    }
+    button[data-baseweb="tab"] {
+        background-color: #f8f9fa !important;
+        border: 1px solid #dee2e6 !important;
+        border-radius: 6px 6px 0 0 !important;
+        padding: 8px 14px !important;
+        font-weight: 500 !important;
+        font-size: 13.5px !important;
+        white-space: nowrap !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background-color: #ffffff !important;
+        border-bottom: 2px solid #ff4b4b !important;
+        font-weight: bold !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # --- CONEXÃO GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -219,12 +244,17 @@ def preparar_dataframe(df_raw):
     df['Motivo Perda'] = df['Motivo Perda'].fillna("Não informado")
     df['Tipo_Lead'] = df.apply(classificar_tipo, axis=1)
     
+    # Extração de datas em formato datetime
+    df['Recebido_DT'] = df['Recebido em'].apply(parse_data_segura)
+    df['Ultimo_Contato_DT'] = df['Último Contato em'].apply(parse_data_segura)
+    df['Primeiro_Contato_DT'] = df['Data Primeiro Contato'].apply(parse_data_segura)
+    df['Perdido_DT'] = df['Negócio Perdido em'].apply(parse_data_segura)
+
     hoje = datetime.datetime.now()
     def calcular_dias(row):
-        data_ref = row.get('Último Contato em')
-        if pd.isna(data_ref) or str(data_ref).strip() == "":
-            data_ref = row.get('Recebido em')
-        dt = parse_data_segura(data_ref)
+        dt = row.get('Ultimo_Contato_DT')
+        if not dt:
+            dt = row.get('Recebido_DT')
         if dt:
             return max(0, (hoje - dt).days)
         return 0
@@ -239,18 +269,15 @@ def preparar_dataframe(df_raw):
             return "Mais de 10 dias"
     df['Faixa_Atraso'] = df['Dias_Sem_Interacao'].apply(faixa_dias)
 
-    # Identificação de Lead que Acabou de Entrar (Sem Primeiro Contato)
+    # Identifica se é lead novo sem contato
     def status_lead_novo(row):
-        dt_recebido = parse_data_segura(row.get('Recebido em'))
-        primeiro_contato = row.get('Data Primeiro Contato')
+        dt_recebido = row.get('Recebido_DT')
+        tem_1o_contato = pd.notna(row.get('Primeiro_Contato_DT'))
         etapa = str(row.get('Etapa do Funil', '')).strip()
 
-        # Se não teve primeiro contato e não foi descartado
-        sem_contato = pd.isna(primeiro_contato) or str(primeiro_contato).strip() == ""
-        if sem_contato and etapa not in ['Perdido', 'Visita Cancelada']:
+        if (not tem_1o_contato) and etapa not in ['Perdido', 'Visita Cancelada']:
             if dt_recebido:
-                minutos = (hoje - dt_recebido).total_seconds() / 60.0
-                if minutos < 0: minutos = 0
+                minutos = max(0, (hoje - dt_recebido).total_seconds() / 60.0)
                 return pd.Series([True, minutos, formatar_tempo_passado(minutos)])
         return pd.Series([False, None, "Já Atendido"])
 
@@ -289,9 +316,10 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
+    # ABAS (Com CSS para 2 linhas na tela)
     aba_visao, aba_dia, aba1, aba2, aba_visitas, aba3, aba4, aba5, aba_relatorios, aba6 = st.tabs([
         "📊 Visão Geral",
-        "⚡ Movimentações & Leads Recentes",
+        "⚡ Movimentações & Leads por Data",
         "1. Aguardando 1ª Interação", 
         "2. Em Atendimento", 
         "3. Visitas & Fechamento",
@@ -302,7 +330,7 @@ if arquivo_atual:
         "8. Bloqueio de Leads"
     ])
 
-    # --- ABA CONSOLIDADA: VISÃO GERAL ---
+    # --- ABA 1: VISÃO GERAL ---
     with aba_visao:
         st.subheader("Panorama Consolidado da Base Importada")
         st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio, motivos de perda e corretores.")
@@ -348,112 +376,101 @@ if arquivo_atual:
         df_dist_corr = pd.crosstab(df['Corretor'], df['Tipo_Lead'], margins=True, margins_name="Total")
         st.dataframe(df_dist_corr, use_container_width=True)
 
-    # --- ABA: LEADS RECÉM-CHEGADOS & MOVIMENTAÇÕES DO DIA ---
+    # --- ABA 2: MOVIMENTAÇÕES & ENTRADAS POR DATA (CORRIGIDA) ---
     with aba_dia:
-        st.subheader("⚡ Alerta de Leads Recentes & Acompanhamento Diário")
-        st.caption("Identifique clientes que acabaram de cair das campanhas sem atendimento e audite o que foi mexido no dia.")
+        st.subheader("⚡ Auditoria Diária: O que Entrou e o que foi Movimentado")
+        st.caption("Filtre uma data exata para auditar: 1) Quais leads novos caíram e quem os recebeu; 2) Quais contatos foram feitos no CRM naquele dia.")
 
-        # SEÇÃO 1: LEADS QUE ACABARAM DE ENTRAR E NINGUÉM FALOU
-        st.markdown("### 🔥 Leads Recém-Chegados Aguardando 1º Contato")
-        df_novos_parados = df[df['Lead_Novo_Sem_Contato']].sort_values(by='Minutos_Aguardando', ascending=True).copy()
+        # Extração de datas disponíveis na planilha para facilitar a seleção
+        datas_disponiveis = sorted(list(set(df['Recebido_DT'].dropna().dt.date.tolist() + df['Ultimo_Contato_DT'].dropna().dt.date.tolist())), reverse=True)
+        data_padrao = datas_disponiveis[0] if datas_disponiveis else datetime.date.today()
 
-        if df_novos_parados.empty:
-            st.success("🎉 Nenhum lead novo sem atendimento! Todos os leads recentes já receberam o primeiro contato.")
-        else:
-            st.error(f"⚠️ Atenção: Existem **{len(df_novos_parados)} leads novos** que entraram e **ainda não tiveram nenhum contato** registrado!")
+        col_d1, col_d2 = st.columns([1, 2])
+        with col_d1:
+            data_selecionada = st.date_input("Escolha a data para auditar:", value=data_padrao, key="sel_data_audit_dia")
 
-            def classificar_urgencia(minutos):
-                if minutos < 60:
-                    return "🟢 Recente (< 1h)"
-                elif minutos < 240:
-                    return "🟡 Atenção (1h a 4h)"
-                else:
-                    return "🔴 Crítico (> 4h sem contato)"
+        # 1. LEADS QUE ENTRARAM NESTA DATA
+        df['Entrou_No_Dia'] = df['Recebido_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
+        df_entradas_dia = df[df['Entrou_No_Dia']].copy()
 
-            df_novos_parados['Urgência'] = df_novos_parados['Minutos_Aguardando'].apply(classificar_urgencia)
+        # 2. LEADS QUE TIVERAM CONTATO OU FORAM PERDIDOS NESTA DATA
+        df['Contatado_No_Dia'] = df['Ultimo_Contato_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
+        df['Perdido_No_Dia'] = df['Perdido_DT'].apply(lambda d: d.date() == data_selecionada if pd.notna(d) else False)
+        df_acoes_dia = df[df['Contatado_No_Dia'] | df['Perdido_No_Dia']].copy()
 
-            cols_novos_show = [
-                'Urgência', 'Tempo_Aguardando_Texto', 'Nome Cliente', 'Celular_Limpo',
-                'Corretor', 'Recebido em', 'Origem (Tipo Mídia)', 'Campanha'
-            ]
-            st.dataframe(df_novos_parados[cols_novos_show].rename(columns={
-                'Tempo_Aguardando_Texto': 'Tempo de Espera',
-                'Nome Cliente': 'Cliente',
-                'Celular_Limpo': 'Celular'
-            }), use_container_width=True, hide_index=True)
-
-            # Cobrança direta por corretor para leads recém-chegados
-            corretores_com_novos = sorted(df_novos_parados['Corretor'].dropna().unique().tolist())
-            if corretores_com_novos:
-                st.markdown("#### ⚡ Cobrar Corretor Imediatamente (WhatsApp)")
-                col_n1, col_n2 = st.columns([1, 2])
-                with col_n1:
-                    corr_cobrar_novo = st.selectbox("Escolha o Corretor para cobrar:", corretores_com_novos, key="sel_corr_novo")
-                
-                df_corr_novos = df_novos_parados[df_novos_parados['Corretor'] == corr_cobrar_novo]
-                msg_urgente = f"Fala, *{corr_cobrar_novo}*! Tudo bem?\n\n⚠️ Tem lead NOVO que acabou de entrar na sua roleta e ainda consta *sem primeiro contato* no CRM:\n\n"
-                for _, r_n in df_corr_novos.iterrows():
-                    msg_urgente += f"• *{r_n['Nome Cliente']}* - {r_n['Celular_Limpo']} (Entrou {r_n['Tempo_Aguardando_Texto']})\n"
-                msg_urgente += "\nConsegue chamar eles agora antes que o cliente esfrie? Valeu!"
-
-                with col_n2:
-                    render_botao_copiar(msg_urgente, f"📋 Copiar Cobrança Urgente para {corr_cobrar_novo}")
+        with col_d2:
+            st.markdown(f"**Resumo de {data_selecionada.strftime('%d/%m/%Y')}:**")
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Leads Entrados", len(df_entradas_dia))
+            k2.metric("Contatados no Dia", len(df_acoes_dia[df_acoes_dia['Contatado_No_Dia']]))
+            k3.metric("Descartados no Dia", len(df_acoes_dia[df_acoes_dia['Perdido_No_Dia']]))
 
         st.markdown("---")
 
-        # SEÇÃO 2: MOVIMENTAÇÕES DE UMA DATA ESPECÍFICA
-        st.markdown("### 📅 Histórico de Ações por Data no CRM")
-        col_dia1, col_dia2 = st.columns([1, 2])
-        with col_dia1:
-            data_escolhida = st.date_input("Selecione a data para auditar o que foi feito:", value=datetime.date.today(), key="sel_data_mov_dia")
-            data_str_comparar = data_escolhida.strftime("%Y-%m-%d")
+        sub_d1, sub_d2 = st.tabs(["📥 1. Leads que Entraram Nesta Data", "📞 2. Leads com Contato/Ação Nesta Data"])
 
-        def lead_movimentado_na_data(row):
-            dt_contato = parse_data_segura(row.get('Último Contato em'))
-            dt_perdido = parse_data_segura(row.get('Negócio Perdido em'))
-            dt_recebido = parse_data_segura(row.get('Recebido em'))
+        with sub_d1:
+            if df_entradas_dia.empty:
+                st.info(f"Nenhum lead com data de entrada (`Recebido em`) registrada em {data_selecionada.strftime('%d/%m/%Y')}.")
+            else:
+                st.markdown(f"#### Foram recebidos **{len(df_entradas_dia)} leads** em {data_selecionada.strftime('%d/%m/%Y')}:")
+                
+                # Resumo de distribuição por corretor
+                dist_novos = df_entradas_dia.groupby('Corretor').agg(
+                    Total_Recebido=('Nome Cliente', 'count'),
+                    Sem_1o_Contato=('Data Primeiro Contato', lambda s: s.isna().sum()),
+                    Ja_Atendidos=('Data Primeiro Contato', lambda s: s.notna().sum())
+                ).reset_index()
+                st.dataframe(dist_novos, use_container_width=True, hide_index=True)
 
-            contato_no_dia = (dt_contato.strftime("%Y-%m-%d") == data_str_comparar) if dt_contato else False
-            perda_no_dia = (dt_perdido.strftime("%Y-%m-%d") == data_str_comparar) if dt_perdido else False
-            entrada_no_dia = (dt_recebido.strftime("%Y-%m-%d") == data_str_comparar) if dt_recebido else False
+                # Tabela detalhada
+                cols_entradas = [
+                    'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Recebido em',
+                    'Data Primeiro Contato', 'Tempo Primeiro Contato', 'Etapa do Funil', 'Origem (Tipo Mídia)'
+                ]
+                df_ent_show = df_entradas_dia[cols_entradas].rename(columns={
+                    'Nome Cliente': 'Cliente',
+                    'Celular_Limpo': 'Celular',
+                    'Data Primeiro Contato': 'Primeiro Contato Feito em',
+                    'Tempo Primeiro Contato': 'Demora no 1º Contato'
+                })
+                st.dataframe(df_ent_show, use_container_width=True, hide_index=True)
 
-            if perda_no_dia:
-                return "❌ Marcado como Perdido"
-            elif contato_no_dia:
-                return "📞 Contato / Atualização no CRM"
-            elif entrada_no_dia:
-                return "🆕 Lead Novo Recebido"
-            return None
+                # Cobrança de leads sem atendimento recebidos na data
+                sem_atend = df_entradas_dia[df_entradas_dia['Data Primeiro Contato'].isna()]
+                if not sem_atend.empty:
+                    st.warning(f"⚠️ Desses {len(df_entradas_dia)} leads, **{len(sem_atend)} ainda não tiveram o 1º contato**!")
+                    corr_cobrar_d = st.selectbox("Escolha um corretor para cobrar os leads recebidos:", sorted(sem_atend['Corretor'].dropna().unique()), key="sel_cob_d_dia")
+                    
+                    df_c_sem = sem_atend[sem_atend['Corretor'] == corr_cobrar_d]
+                    msg_d = f"Olá, *{corr_cobrar_d}*! Tudo bem?\n\nIdentificamos estes leads que entraram na sua roleta em {data_selecionada.strftime('%d/%m/%Y')} e continuam *sem primeiro contato registrado*:\n\n"
+                    for _, r in df_c_sem.iterrows():
+                        msg_d += f"• *{r['Nome Cliente']}* - {r['Celular_Limpo']}\n"
+                    msg_d += "\nConsegue dar prioridade e fazer esse contato inicial agora? Obrigado!"
+                    
+                    render_botao_copiar(msg_d, f"📋 Copiar Cobrança para {corr_cobrar_d}")
+                    st.code(msg_d, language="text")
 
-        df['Acao_No_Dia'] = df.apply(lead_movimentado_na_data, axis=1)
-        df_mov_dia = df[df['Acao_No_Dia'].notna()].copy()
+        with sub_d2:
+            if df_acoes_dia.empty:
+                st.info(f"Nenhum atendimento ou alteração registrada no CRM com data de {data_selecionada.strftime('%d/%m/%Y')}.")
+            else:
+                st.markdown(f"#### Foram movimentados **{len(df_acoes_dia)} leads** no CRM em {data_selecionada.strftime('%d/%m/%Y')}:")
+                
+                # Resumo por corretor
+                resumo_acao_corr = df_acoes_dia.groupby(['Corretor', 'Etapa do Funil']).size().unstack(fill_value=0)
+                st.dataframe(resumo_acao_corr, use_container_width=True)
 
-        with col_dia2:
-            st.metric(
-                label=f"Total de Leads Atualizados em {data_escolhida.strftime('%d/%m/%Y')}",
-                value=len(df_mov_dia),
-                help="Leads que tiveram contato, anotação, descarte ou entrada registrada nesta data."
-            )
-
-        if df_mov_dia.empty:
-            st.info(f"Nenhum registro com data de atualização em **{data_escolhida.strftime('%d/%m/%Y')}** localizado nesta planilha.")
-        else:
-            st.markdown("#### 👥 Produtividade dos Corretores Nesta Data")
-            resumo_dia_corr = df_mov_dia.groupby(['Corretor', 'Acao_No_Dia']).size().unstack(fill_value=0)
-            st.dataframe(resumo_dia_corr, use_container_width=True)
-
-            st.markdown(f"#### 📝 Detalhamento de Leads Trabalhados em {data_escolhida.strftime('%d/%m/%Y')}")
-            cols_dia_exibir = [
-                'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Acao_No_Dia',
-                'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Motivo Perda'
-            ]
-            df_dia_tabela = df_mov_dia[cols_dia_exibir].rename(columns={
-                'Nome Cliente': 'Cliente',
-                'Celular_Limpo': 'Celular',
-                'Acao_No_Dia': 'Ação Registrada',
-                'Descrição Último Contato': 'Anotação Feita no CRM'
-            })
-            st.dataframe(df_dia_tabela, use_container_width=True, hide_index=True)
+                cols_acoes = [
+                    'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Etapa do Funil',
+                    'Último Contato em', 'Descrição Último Contato', 'Motivo Perda'
+                ]
+                df_acoes_show = df_acoes_dia[cols_acoes].rename(columns={
+                    'Nome Cliente': 'Cliente',
+                    'Celular_Limpo': 'Celular',
+                    'Descrição Último Contato': 'Anotação no CRM'
+                })
+                st.dataframe(df_acoes_show, use_container_width=True, hide_index=True)
 
     # --- PAINEL PADRÃO PARA CORRETOR FIXO (ABAS 1, 2 E 3) ---
     def renderizar_painel_corretor_fixo(df_tipo, chave_aba, titulo_aba):
@@ -645,13 +662,13 @@ if arquivo_atual:
                         st.success(f"Sucesso! {len(leads_para_gravar)} leads redistribuídos para {novo_destinatario} gravados na nuvem e removidos da fila ativa.")
                         st.rerun()
 
-                    st.markdown("#### Detalhes do Malote (Com Corretor Original)")
+                    st.markdown("#### Detalhamento do Malote (Com Corretor Original)")
                     df_exibicao = malote_atual.rename(columns={'Corretor': 'Corretor Original (Dono Anterior)'})
                     st.dataframe(df_exibicao[['Nome Cliente', 'Celular_Limpo', 'Corretor Original (Dono Anterior)', 'Motivo Perda', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato']], use_container_width=True)
                 else:
                     st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    # --- ABA 5: AUDITORIA VISUAL DE MALOTES (CRONOLÓGICA) ---
+    # --- ABA 5: AUDITORIA DE MALOTES (GOOGLE SHEETS) ---
     with aba4:
         st.subheader("Auditoria de Malotes Enviados (Cruzamento com Google Sheets)")
         st.caption("Verificação cronológica: o corretor só é considerado como 'Trabalhado' se a data do CRM for MAIS RECENTE que a data de envio do malote.")
@@ -663,8 +680,8 @@ if arquivo_atual:
         else:
             def avaliar_atendimento_pos_envio(row):
                 data_envio_dt = parse_data_segura(row.get('data_ultima_cobranca'))
-                data_contato_dt = parse_data_segura(row.get('Último Contato em'))
-                data_perdido_dt = parse_data_segura(row.get('Negócio Perdido em'))
+                data_contato_dt = row.get('Ultimo_Contato_DT')
+                data_perdido_dt = row.get('Perdido_DT')
 
                 etapa_crm_agora = str(row.get('Etapa do Funil', '')).strip()
                 etapa_original_envio = str(row.get('etapa_ao_enviar', '')).strip()
