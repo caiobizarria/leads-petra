@@ -260,19 +260,6 @@ def preparar_dataframe(df_raw):
         else:
             return "Mais de 10 dias"
     df['Faixa_Atraso'] = df['Dias_Sem_Interacao'].apply(faixa_dias)
-
-    def status_lead_novo(row):
-        dt_recebido = row.get('Recebido_DT')
-        tem_1o_contato = pd.notna(row.get('Primeiro_Contato_DT'))
-        etapa = str(row.get('Etapa do Funil', '')).strip()
-
-        if (not tem_1o_contato) and etapa not in ['Perdido', 'Visita Cancelada']:
-            if dt_recebido:
-                minutos = max(0, (hoje - dt_recebido).total_seconds() / 60.0)
-                return pd.Series([True, minutos, formatar_tempo_passado(minutos)])
-        return pd.Series([False, None, "Já Atendido"])
-
-    df[['Lead_Novo_Sem_Contato', 'Minutos_Aguardando', 'Tempo_Aguardando_Texto']] = df.apply(status_lead_novo, axis=1)
     return df
 
 st.title("Gestão Comercial & Retrabalho de Leads")
@@ -288,7 +275,7 @@ st.sidebar.markdown("### 📌 Módulos do Sistema")
 OPCOES_MODULOS = [
     "📊 Visão Geral",
     "⚡ Movimentações & Leads por Data",
-    "1. Aguardando 1ª Interação", 
+    "1. Aguardando 1ª Interação (Em Tentativa)", 
     "2. Em Atendimento", 
     "3. Visitas & Fechamento",
     "4. Fila de Recuperação (Redistribuir)",
@@ -309,7 +296,13 @@ if arquivo_atual:
 
     df_hist = get_historico()
     if not df_hist.empty:
-        df = df.merge(df_hist[['lead_key', 'corretor_cobrado', 'corretor_original', 'tipo_lead_envio', 'etapa_ao_enviar', 'data_ultima_cobranca', 'total_cobrancas', 'feedback_recuperacao']], on='lead_key', how='left')
+        # Garante unicidade da chave no histórico antes de mesclar
+        df_hist_unique = df_hist.drop_duplicates(subset=['lead_key'], keep='last')
+        df = df.merge(
+            df_hist_unique[['lead_key', 'corretor_cobrado', 'corretor_original', 'tipo_lead_envio', 'etapa_ao_enviar', 'data_ultima_cobranca', 'total_cobrancas', 'feedback_recuperacao']], 
+            on='lead_key', 
+            how='left'
+        )
     else:
         df['corretor_cobrado'] = None
         df['corretor_original'] = None
@@ -340,7 +333,7 @@ if arquivo_atual:
 
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total de Leads na Planilha", total_base)
-        m2.metric("Aguardando 1ª Interação", total_1a)
+        m2.metric("Em Tentativa (1ª Interação)", total_1a)
         m3.metric("Em Atendimento Ativo", total_atend)
         m4.metric("Visitas & Fechamentos", total_vis)
         m5.metric("Fila de Recuperação", total_recup)
@@ -407,22 +400,23 @@ if arquivo_atual:
                 st.info(f"Nenhum lead com data de entrada (`Recebido em`) registrada em {data_selecionada.strftime('%d/%m/%Y')}.")
             else:
                 st.markdown(f"#### Foram recebidos **{len(df_entradas_dia)} leads** em {data_selecionada.strftime('%d/%m/%Y')}:")
+                
+                # Resumo por corretor
                 dist_novos = df_entradas_dia.groupby('Corretor').agg(
                     Total_Recebido=('Nome Cliente', 'count'),
-                    Sem_1o_Contato=('Data Primeiro Contato', lambda s: s.isna().sum()),
-                    Ja_Atendidos=('Data Primeiro Contato', lambda s: s.notna().sum())
+                    Em_Tentativa=('Etapa do Funil', lambda s: (s.isin(['Em Tentativa', 'Lead na Base'])).sum()),
+                    Ja_Atendendo=('Etapa do Funil', lambda s: (~s.isin(['Em Tentativa', 'Lead na Base', 'Perdido'])).sum())
                 ).reset_index()
                 st.dataframe(dist_novos, use_container_width=True, hide_index=True)
 
                 cols_entradas = [
                     'Nome Cliente', 'Celular_Limpo', 'Corretor', 'Recebido em',
-                    'Data Primeiro Contato', 'Tempo Primeiro Contato', 'Etapa do Funil', 'Origem (Tipo Mídia)'
+                    'Etapa do Funil', 'Último Contato em', 'Descrição Último Contato', 'Origem (Tipo Mídia)'
                 ]
                 df_ent_show = df_entradas_dia[cols_entradas].rename(columns={
                     'Nome Cliente': 'Cliente',
                     'Celular_Limpo': 'Celular',
-                    'Data Primeiro Contato': 'Primeiro Contato Feito em',
-                    'Tempo Primeiro Contato': 'Demora no 1º Contato'
+                    'Descrição Último Contato': 'Última Anotação'
                 })
                 st.dataframe(df_ent_show, use_container_width=True, hide_index=True)
 
@@ -525,9 +519,9 @@ if arquivo_atual:
         st.dataframe(malote_atual[['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Faixa_Atraso', 'Dias_Sem_Interacao', 'Descrição Último Contato', 'Último Contato em', 'Status_Cobranca']], use_container_width=True)
 
     # --- MÓDULOS 1, 2, 3 ---
-    if modulo_ativo == "1. Aguardando 1ª Interação":
+    if modulo_ativo == "1. Aguardando 1ª Interação (Em Tentativa)":
         df_1 = df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"]
-        renderizar_painel_corretor_fixo(df_1, "m1", "Aguardando 1ª Interação")
+        renderizar_painel_corretor_fixo(df_1, "m1", "Aguardando 1ª Interação (Em Tentativa)")
 
     elif modulo_ativo == "2. Em Atendimento":
         df_2 = df[df['Tipo_Lead'] == "2. Em Atendimento"]
@@ -642,7 +636,7 @@ if arquivo_atual:
                 else:
                     st.warning(f"Sem novos leads disponíveis para redistribuir para **{novo_destinatario}**.")
 
-    # --- MÓDULO 5: AUDITORIA DE COBRANÇA DE CARTEIRA (AUTOMÁTICA VIA CRM) ---
+    # --- MÓDULO 5: AUDITORIA DE COBRANÇA DE CARTEIRA ---
     elif modulo_ativo == "🎯 Auditoria: Cobrança de Carteira":
         st.subheader("Auditoria de Cobrança de Carteira (1º Contato & Atendimento)")
         st.caption("Estes leads já pertencem ao corretor no CRM. Verificação cronológica: checamos se ele registrou contato no Latitude APÓS o envio da cobrança.")
@@ -712,7 +706,7 @@ if arquivo_atual:
             cols_show_cart = ['Nome Cliente', 'Celular_Limpo', 'Status_Auditoria', 'data_ultima_cobranca', 'Último Contato em', 'Etapa do Funil', 'Descrição Último Contato']
             st.dataframe(df_view_cart[cols_show_cart], use_container_width=True, hide_index=True)
 
-    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (BLOCKLIST + RESGATES) ---
+    # --- MÓDULO 6: AUDITORIA DA FILA DE RECUPERAÇÃO (BLOCKLIST + RESGATES CORRIGIDO) ---
     elif modulo_ativo == "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)":
         st.subheader("Métrica de Ouro: Eficiência do Retrabalho por Corretor")
         st.caption("Avalia o retorno real dos leads perdidos redistribuídos: 1) Resgates vivos (viraram Atendimento/Visita no CRM); 2) Base limpa (leads qualificados que foram para a Blocklist).")
@@ -723,7 +717,10 @@ if arquivo_atual:
             st.info("Nenhum malote de recuperação foi redistribuído e salvo na planilha até o momento.")
         else:
             telefones_bloq_dict = dict(zip(df_bloqueados['celular'].astype(str), df_bloqueados['motivo_cancelamento'])) if not df_bloqueados.empty else {}
-            crm_leads_dict = df.set_index('lead_key').to_dict('index') if not df.empty else {}
+            
+            # CORREÇÃO DO ÍNDICE DUPLICADO: DEDUP SEGURO ANTES DE TRANSFORMAR EM DICIONÁRIO
+            df_crm_unique = df.drop_duplicates(subset=['lead_key'], keep='last')
+            crm_leads_dict = df_crm_unique.set_index('lead_key').to_dict('index') if not df_crm_unique.empty else {}
 
             def diagnosticar_resultado_retrabalho(row):
                 key = str(row['lead_key'])
@@ -731,6 +728,7 @@ if arquivo_atual:
                 novo_dono = str(row['corretor_cobrado']).strip()
                 orig_dono = str(row['corretor_original']).strip()
 
+                # 1. Checa se o lead foi para a Blocklist (Base Limpa)
                 if cel in telefones_bloq_dict:
                     motivo_b = telefones_bloq_dict[cel]
                     return pd.Series([
@@ -739,6 +737,7 @@ if arquivo_atual:
                         "Limpeza de Base"
                     ])
 
+                # 2. Checa no CRM se o lead avançou ou trocou de titularidade
                 if key in crm_leads_dict:
                     crm_info = crm_leads_dict[key]
                     etapa_atual = str(crm_info.get('Etapa do Funil', '')).strip()
@@ -757,6 +756,7 @@ if arquivo_atual:
                             "Resgate Ativo"
                         ])
 
+                # 3. Retorno manual registrado
                 fb = str(row.get('feedback_recuperacao', '')).strip()
                 if fb not in ['None', 'N/A', 'Aguardando Retorno', '']:
                     return pd.Series([
@@ -1146,8 +1146,8 @@ if arquivo_atual:
 
     # --- MÓDULO 9: BLOQUEIO DE LEADS ---
     elif modulo_ativo == "🚫 Bloqueio de Leads":
-        st.subheader("Bloqueio de Leads (Remover Definitivamente da Redistribuição)")
-        st.caption("Use esta área para cancelar leads que informaram que já compraram de concorrente, pediram para não ser contatados, acharam caro ou não gostaram da localização.")
+        st.subheader("Bloqueio de Leads (Remover Definitivamente da Base / Retrabalho)")
+        st.caption("Use esta área para cancelar leads que informaram que acharam caro, não gostaram da localização, já compraram de concorrente ou pediram para não ser contatados.")
 
         col_b1, col_b2 = st.columns([1, 1])
 
