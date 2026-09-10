@@ -9,7 +9,7 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para garantir quebra limpa
+# CSS para layout limpo
 st.markdown("""
 <style>
     div[data-baseweb="tab-list"] {
@@ -27,6 +27,16 @@ COLS_ENVIOS = [
     'tipo_lead', 'etapa_ao_enviar', 'data_envio', 'total_cobrancas', 'feedback_recuperacao'
 ]
 COLS_BLOQUEADOS = ['celular', 'nome', 'motivo_cancelamento', 'data_bloqueio']
+
+MOTIVOS_DESCARTE_REAL = [
+    "Achou o valor alto / Fora do orçamento",
+    "Não gostou da localização / Muito longe",
+    "Já comprou de concorrente",
+    "Pediu para não entrar em contato",
+    "Número errado / Inexistente",
+    "Sem interesse definitivo",
+    "Outro motivo"
+]
 
 def carregar_aba(nome_aba, colunas_padrao):
     try:
@@ -87,14 +97,17 @@ def registrar_lote_enviado(leads_para_gravar, corretor_destino, tipo_lead):
 
     conn.update(worksheet="controle_envios", data=df_final)
 
-def atualizar_feedback_recuperacao(lead_key, novo_status):
+def atualizar_feedback_recuperacao(lead_key_ou_cel, novo_status):
     df_atual = carregar_aba("controle_envios", COLS_ENVIOS)
     if not df_atual.empty:
         df_atual['lead_key'] = df_atual['lead_key'].astype(str)
-        df_atual.loc[df_atual['lead_key'] == str(lead_key), 'feedback_recuperacao'] = novo_status
-        conn.update(worksheet="controle_envios", data=df_atual)
+        df_atual['celular'] = df_atual['celular'].astype(str)
+        mask = (df_atual['lead_key'] == str(lead_key_ou_cel)) | (df_atual['celular'] == str(lead_key_ou_cel))
+        if mask.any():
+            df_atual.loc[mask, 'feedback_recuperacao'] = novo_status
+            conn.update(worksheet="controle_envios", data=df_atual)
 
-def bloquear_lead_db(celular, nome, motivo):
+def registrar_status_lead_db(celular, nome, motivo):
     df_bloq = carregar_aba("leads_bloqueados", COLS_BLOQUEADOS)
     agora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
     novo = pd.DataFrame([{
@@ -109,6 +122,12 @@ def bloquear_lead_db(celular, nome, motivo):
         df_bloq['celular'] = df_bloq['celular'].astype(str)
         df_final = pd.concat([df_bloq[df_bloq['celular'] != str(celular)], novo], ignore_index=True)
     conn.update(worksheet="leads_bloqueados", data=df_final)
+
+    # Se estiver em controle_envios, já sincroniza o feedback
+    if motivo == "🎯 Cliente resgatado em contato com corretor":
+        atualizar_feedback_recuperacao(celular, "🎯 Resgatado em Contato com Corretor")
+    else:
+        atualizar_feedback_recuperacao(celular, f"❌ Descartado: {motivo}")
 
 def desbloquear_lead_db(celular):
     df_bloq = carregar_aba("leads_bloqueados", COLS_BLOQUEADOS)
@@ -304,7 +323,7 @@ OPCOES_MODULOS = [
     "🎯 Auditoria: Cobrança de Carteira",
     "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)",
     "6. Comparador de Planilhas (Raio-X)",
-    "🚫 Bloqueio de Leads"
+    "🚫 Gestão de Retornos & Bloqueio de Leads"
 ]
 
 modulo_ativo = st.sidebar.radio("Navegação:", OPCOES_MODULOS, index=0, label_visibility="collapsed")
@@ -341,13 +360,18 @@ if arquivo_atual:
 
     df['Status_Cobranca'] = df['data_ultima_cobranca'].apply(lambda x: "Já Cobrado/Passado" if pd.notna(x) and str(x).strip() != "" else "Nunca Cobrado")
     
+    # ATENÇÃO: Só bloqueia dos funis ativos quem tem motivo de DESCARTE REAL (não bloqueia quem foi resgatado!)
     df_bloqueados = get_leads_bloqueados()
-    telefones_bloqueados = set(df_bloqueados['celular'].dropna().astype(str).tolist()) if not df_bloqueados.empty else set()
+    if not df_bloqueados.empty:
+        df_bloqueados_reais = df_bloqueados[df_bloqueados['motivo_cancelamento'].isin(MOTIVOS_DESCARTE_REAL)]
+        telefones_bloqueados = set(df_bloqueados_reais['celular'].dropna().astype(str).tolist())
+    else:
+        telefones_bloqueados = set()
+
     df['Lead_Bloqueado'] = df['Celular_Limpo'].astype(str).isin(telefones_bloqueados)
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    # Carrega base anterior para cruzamento de evolução se existir
     df_ant = None
     if arquivo_anterior:
         try:
@@ -467,7 +491,6 @@ if arquivo_atual:
 
         sub_aba_corr, sub_aba_loteadora = st.tabs(["👤 Relatório Individual do Corretor (com Evolução)", "🏢 Dossiê da Loteadora"])
 
-        # 1. RELATÓRIO DO CORRETOR
         with sub_aba_corr:
             st.markdown("### 📤 Gerador de Relatório Individual para o Corretor")
             st.caption("Gera um relatório pronto para WhatsApp com a evolução e a lista dos leads para cobrar prioridade.")
@@ -476,7 +499,6 @@ if arquivo_atual:
             df_c_base = df[df['Corretor'] == corr_alvo_rel].copy()
             df_c_ativos = df_c_base[df_c_base['Etapa_Macro'].notna() & (~df_c_base['Lead_Bloqueado'])].copy()
 
-            # Totais do corretor
             tot_corr_ativos = len(df_c_ativos)
             c_tent = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Tentativa'])
             c_atend = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Atendimento'])
@@ -487,22 +509,18 @@ if arquivo_atual:
             c_4_10 = len(df_c_ativos[df_c_ativos['Faixa_Atraso'] == '4 a 10 dias'])
             c_mais_10 = len(df_c_ativos[df_c_ativos['Faixa_Atraso'] == 'Mais de 10 dias'])
 
-            # Cards do Corretor
             r_c1, r_c2, r_c3, r_c4 = st.columns(4)
             r_c1.metric("Total Carteira Ativa", tot_corr_ativos)
             r_c2.metric("🟢 Em dia (0 a 3 dias)", c_0_3)
             r_c3.metric("🟡 Atenção (4 a 10 dias)", c_4_10)
             r_c4.metric("🔴 Crítico (+10 dias)", c_mais_10, delta=f"-{c_mais_10}" if c_mais_10 > 0 else "0", delta_color="inverse")
 
-            # Cálculo de Evolução Comparativa (se planilha anterior existir)
             evolucao_texto_whats = ""
             if df_ant is not None:
-                # Cruza leads do corretor na anterior e atual
                 df_ant_c = df_ant[df_ant['Corretor'] == corr_alvo_rel]
                 ant_map = df_ant_c.set_index('lead_key')['Etapa do Funil'].to_dict()
                 
                 avancos = 0
-                novos_contatos = 0
                 for _, r_now in df_c_base.iterrows():
                     k = r_now['lead_key']
                     if k in ant_map:
@@ -513,7 +531,6 @@ if arquivo_atual:
 
                 evolucao_texto_whats = f"\n📈 *EVOLUÇÃO RECENTE (VS. RELATÓRIO ANTERIOR):*\n• Leads que avançaram de etapa: *{avancos}*\n"
 
-            # Montagem do Texto para WhatsApp
             hoje_formatada = datetime.datetime.now().strftime("%d/%m/%Y")
             msg_whatsapp_corretor = f"📊 *RAIO-X DE CARTEIRA & EVOLUÇÃO COMERCIAL*\n"
             msg_whatsapp_corretor += f"👤 *Consultor:* {corr_alvo_rel}\n"
@@ -530,7 +547,6 @@ if arquivo_atual:
             msg_whatsapp_corretor += f"🟡 *4 a 10 dias (Atenção):* {c_4_10} clientes\n"
             msg_whatsapp_corretor += f"🔴 *+10 dias (Crítico / Sem contato):* {c_mais_10} clientes\n"
 
-            # Lista dos Críticos (+10 dias)
             df_criticos_corr = df_c_ativos[df_c_ativos['Faixa_Atraso'] == 'Mais de 10 dias'].sort_values(by='Dias_Sem_Interacao', ascending=False)
             if not df_criticos_corr.empty:
                 msg_whatsapp_corretor += f"\n🚨 *PRIORIDADE DE HOJE (+10 DIAS PARADOS):*\n"
@@ -550,10 +566,8 @@ if arquivo_atual:
             st.markdown("---")
             st.markdown(f"#### 📥 Baixar Relatório em Planilha Excel ({corr_alvo_rel})")
             
-            # Geração de arquivo Excel formatado com abas por etapa
             buffer_corr_excel = io.BytesIO()
             with pd.ExcelWriter(buffer_corr_excel, engine='openpyxl') as writer:
-                # Aba 1: Resumo Executivo
                 df_resumo_exp = pd.DataFrame([{
                     'Consultor': corr_alvo_rel,
                     'Total Carteira Ativa': tot_corr_ativos,
@@ -569,16 +583,13 @@ if arquivo_atual:
                 
                 cols_exp = ['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Dias_Sem_Interacao', 'Faixa_Atraso', 'Último Contato em', 'Descrição Último Contato']
                 
-                # Aba 2: Críticos
                 if not df_criticos_corr.empty:
                     df_criticos_corr[cols_exp].to_excel(writer, index=False, sheet_name="Criticos_Mais_10_Dias")
                 
-                # Aba 3: Em Atendimento
                 df_atend_corr = df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Atendimento']
                 if not df_atend_corr.empty:
                     df_atend_corr[cols_exp].to_excel(writer, index=False, sheet_name="Em_Atendimento")
                 
-                # Aba 4: Em Tentativa
                 df_tent_corr = df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Tentativa']
                 if not df_tent_corr.empty:
                     df_tent_corr[cols_exp].to_excel(writer, index=False, sheet_name="Em_Tentativa")
@@ -590,7 +601,6 @@ if arquivo_atual:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-        # 2. RELATÓRIO DA LOTEADORA
         with sub_aba_loteadora:
             st.markdown("### 🏢 Dossiê Estratégico para a Loteadora")
             st.caption("Composição de canais de marketing, taxa de conversão, volume financeiro e motivos de descarte.")
@@ -1116,8 +1126,15 @@ if arquivo_atual:
                 novo_dono = str(row['corretor_cobrado']).strip()
                 orig_dono = str(row['corretor_original']).strip()
 
-                if cel in telefones_bloq_dict:
-                    motivo_b = telefones_bloq_dict[cel]
+                # Resgatado manualmente
+                motivo_b = telefones_bloq_dict.get(cel, "")
+                if motivo_b == "🎯 Cliente resgatado em contato com corretor":
+                    return pd.Series([
+                        "🎯 Resgatado em Contato!",
+                        f"Retorno positivo registrado para {novo_dono} (Cliente respondeu)",
+                        "Resgate Ativo"
+                    ])
+                elif cel in telefones_bloq_dict and motivo_b in MOTIVOS_DESCARTE_REAL:
                     return pd.Series([
                         "🧹 Base Limpa (Blocklist)",
                         f"Descarte Qualificado por {novo_dono}: {motivo_b}",
@@ -1144,11 +1161,9 @@ if arquivo_atual:
 
                 fb = str(row.get('feedback_recuperacao', '')).strip()
                 if fb not in ['None', 'N/A', 'Aguardando Retorno', '']:
-                    return pd.Series([
-                        f"💬 {fb}",
-                        f"Retorno do corretor {novo_dono}",
-                        "Em Andamento"
-                    ])
+                    if 'Resgatado' in fb or '🎯' in fb:
+                        return pd.Series([f"💬 {fb}", f"Confirmado com {novo_dono}", "Resgate Ativo"])
+                    return pd.Series([f"💬 {fb}", f"Retorno do corretor {novo_dono}", "Em Andamento"])
 
                 return pd.Series([
                     "⏳ Aguardando Retorno / Sem Ação",
@@ -1166,7 +1181,7 @@ if arquivo_atual:
 
             m_r1, m_r2, m_r3, m_r4 = st.columns(4)
             m_r1.metric("Leads Perdidos Redistribuídos", total_redistribuido)
-            m_r2.metric("🎯 Resgatados no CRM", total_resgatados)
+            m_r2.metric("🎯 Resgatados (Contato / CRM)", total_resgatados)
             m_r3.metric("🧹 Base Limpa (Blocklist)", total_limpos)
             m_r4.metric("Taxa de Resolução Real", f"{taxa_eficiencia:.1f}%")
 
@@ -1197,13 +1212,13 @@ if arquivo_atual:
                     'Desempenho': status_c,
                     'Eficiência': f"{barra_c} ({taxa_c:.0f}%)",
                     'Total Recebido': tot_c,
-                    '🎯 Resgatados (CRM)': resg_c,
+                    '🎯 Resgatados': resg_c,
                     '🧹 Base Limpa (Blocklist)': limp_c,
                     '⏳ Ainda Sem Ação': pend_c,
                     '% Resolução': f"{taxa_c:.1f}%"
                 })
 
-            df_placar_view = pd.DataFrame(placar_corretores).sort_values(by='🎯 Resgatados (CRM)', ascending=False)
+            df_placar_view = pd.DataFrame(placar_corretores).sort_values(by='🎯 Resgatados', ascending=False)
             st.dataframe(df_placar_view, use_container_width=True, hide_index=True)
 
             st.markdown("---")
@@ -1405,15 +1420,15 @@ if arquivo_atual:
                 })
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
 
-    # --- MÓDULO 9: BLOQUEIO DE LEADS ---
-    elif modulo_ativo == "🚫 Bloqueio de Leads":
-        st.subheader("Bloqueio de Leads (Remover Definitivamente da Base / Retrabalho)")
-        st.caption("Use esta área para cancelar leads que informaram que acharam caro, não gostaram da localização, já compraram de concorrente ou pediram para não ser contatados.")
+    # --- MÓDULO 9: GESTÃO DE RETORNOS & BLOQUEIO DE LEADS ---
+    elif modulo_ativo == "🚫 Gestão de Retornos & Bloqueio de Leads":
+        st.subheader("Gestão de Retornos Manuais & Bloqueio de Leads")
+        st.caption("Cadastre tanto clientes que responderam positivamente (Resgatados) quanto clientes para descarte definitivo (Blocklist).")
 
         col_b1, col_b2 = st.columns([1, 1])
 
         with col_b1:
-            st.markdown("#### Bloquear Novo Lead")
+            st.markdown("#### Registrar Retorno ou Bloqueio")
             busca_cliente = st.text_input("Buscar por Nome ou Telefone na base atual:")
             leads_encontrados = pd.DataFrame()
             if busca_cliente.strip():
@@ -1438,9 +1453,11 @@ if arquivo_atual:
                 celular_alvo = st.text_input("Ou digite o Celular (apenas dígitos):", value="")
                 nome_alvo = st.text_input("Nome do Cliente (opcional):", value="")
 
+            # OPÇÃO DE RESGATE ADICIONADA COMO DESTAQUE
             motivo_cancel = st.selectbox(
-                "Motivo do Bloqueio:",
+                "Qual foi o retorno / status deste cliente?",
                 [
+                    "🎯 Cliente resgatado em contato com corretor",
                     "Achou o valor alto / Fora do orçamento",
                     "Não gostou da localização / Muito longe",
                     "Já comprou de concorrente",
@@ -1451,32 +1468,54 @@ if arquivo_atual:
                 ]
             )
 
-            if st.button("Confirmar Bloqueio do Lead no Google Sheets"):
+            if st.button("Confirmar e Salvar no Google Sheets"):
                 cel_limpo = limpar_celular(celular_alvo)
                 if len(cel_limpo) < 8:
-                    st.error("Informe um número de celular válido para bloquear.")
+                    st.error("Informe um número de celular válido.")
                 else:
-                    with st.spinner("Salvando bloqueio na planilha..."):
-                        bloquear_lead_db(cel_limpo, nome_alvo or "Cliente", motivo_cancel)
-                    st.success(f"Lead {nome_alvo} ({cel_limpo}) foi BLOQUEADO com sucesso no Google Sheets!")
+                    with st.spinner("Salvando status na planilha..."):
+                        registrar_status_lead_db(cel_limpo, nome_alvo or "Cliente", motivo_cancel)
+                    
+                    if motivo_cancel == "🎯 Cliente resgatado em contato com corretor":
+                        st.success(f"🎉 Vitória! O cliente {nome_alvo} ({cel_limpo}) foi registrado como RESGATADO COM SUCESSO! Ele continua ativo na carteira.")
+                    else:
+                        st.warning(f"Lead {nome_alvo} ({cel_limpo}) foi inserido na BLOCKLIST como descarte qualificado!")
                     st.rerun()
 
         with col_b2:
-            st.markdown("#### Leads Bloqueados Atualmente (Planilha)")
-            df_bloq_exibir = get_leads_bloqueados()
-            st.metric("Total de Leads Bloqueados", len(df_bloq_exibir))
+            st.markdown("#### Histórico de Cadastros Manuais (Planilha)")
+            df_bloq_todos = get_leads_bloqueados()
 
-            if not df_bloq_exibir.empty:
-                st.dataframe(df_bloq_exibir[['celular', 'nome', 'motivo_cancelamento', 'data_bloqueio']], use_container_width=True)
+            tab_bloq_reais, tab_resgatados_manuais = st.tabs(["🚫 Blocklist (Descartes)", "🎯 Resgatados em Contato"])
 
-                tel_desbloquear = st.selectbox("Deseja reativar/desbloquear algum lead?", ["Nenhum"] + df_bloq_exibir['celular'].dropna().astype(str).tolist())
-                if tel_desbloquear != "Nenhum" and st.button(f"Desbloquear {tel_desbloquear}"):
-                    with st.spinner("Removendo da lista de bloqueio..."):
-                        desbloquear_lead_db(tel_desbloquear)
-                    st.success(f"Lead {tel_desbloquear} desbloqueado e liberado novamente!")
-                    st.rerun()
-            else:
-                st.info("Nenhum lead bloqueado até o momento.")
+            with tab_bloq_reais:
+                if not df_bloq_todos.empty:
+                    df_descartes = df_bloq_todos[df_bloq_todos['motivo_cancelamento'] != "🎯 Cliente resgatado em contato com corretor"]
+                    st.metric("Total de Leads na Blocklist", len(df_descartes))
+                    if not df_descartes.empty:
+                        st.dataframe(df_descartes[['celular', 'nome', 'motivo_cancelamento', 'data_bloqueio']], use_container_width=True)
+                        
+                        tel_desbloquear = st.selectbox("Deseja reativar/desbloquear algum lead?", ["Nenhum"] + df_descartes['celular'].dropna().astype(str).tolist(), key="sel_desbloq_box")
+                        if tel_desbloquear != "Nenhum" and st.button(f"Desbloquear {tel_desbloquear}"):
+                            with st.spinner("Removendo da lista de bloqueio..."):
+                                desbloquear_lead_db(tel_desbloquear)
+                            st.success(f"Lead {tel_desbloquear} liberado novamente!")
+                            st.rerun()
+                    else:
+                        st.info("Nenhum lead com descarte registrado.")
+                else:
+                    st.info("Nenhum registro até o momento.")
+
+            with tab_resgatados_manuais:
+                if not df_bloq_todos.empty:
+                    df_resgates = df_bloq_todos[df_bloq_todos['motivo_cancelamento'] == "🎯 Cliente resgatado em contato com corretor"]
+                    st.metric("Clientes Resgatados Registrados", len(df_resgates))
+                    if not df_resgates.empty:
+                        st.dataframe(df_resgates[['celular', 'nome', 'data_bloqueio']].rename(columns={'data_bloqueio': 'Data do Resgate'}), use_container_width=True)
+                    else:
+                        st.info("Nenhum resgate manual registrado ainda.")
+                else:
+                    st.info("Nenhum registro até o momento.")
 
 else:
     st.info("Faça o upload do relatório diário na barra lateral para iniciar.")
