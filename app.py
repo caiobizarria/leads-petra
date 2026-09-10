@@ -9,7 +9,7 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para garantir layout limpo
+# CSS para layout limpo
 st.markdown("""
 <style>
     div[data-baseweb="tab-list"] {
@@ -219,16 +219,16 @@ def classificar_tipo(row):
             return "Perdido (Outros Motivos)"
     return "Outros"
 
-def classificar_etapa_matriz(etapa_str):
+def classificar_etapa_simples(etapa_str):
     etapa_str = str(etapa_str).strip()
     if etapa_str in ['Em Tentativa', 'Lead na Base']:
-        return "1. Em Tentativa"
+        return "Em Tentativa"
     elif 'Em Atendimento' in etapa_str:
-        return "2. Em Atendimento"
+        return "Em Atendimento"
     elif etapa_str == 'Visita Agendada':
-        return "3. Visita Agendada"
+        return "Visita Agendada"
     elif etapa_str == 'Visita Realizada':
-        return "4. Visita Realizada"
+        return "Visita Realizada"
     return None
 
 def parse_data_segura(val):
@@ -247,7 +247,7 @@ def preparar_dataframe(df_raw, data_referencia=None):
     df['Descrição Último Contato'] = df['Descrição Último Contato'].fillna("Sem descrição registrada")
     df['Motivo Perda'] = df['Motivo Perda'].fillna("Não informado")
     df['Tipo_Lead'] = df.apply(classificar_tipo, axis=1)
-    df['Etapa_Matriz'] = df['Etapa do Funil'].apply(classificar_etapa_matriz)
+    df['Etapa_Macro'] = df['Etapa do Funil'].apply(classificar_etapa_simples)
     
     df['Recebido_DT'] = pd.to_datetime(df['Recebido em'], dayfirst=True, errors='coerce')
     df['Ultimo_Contato_DT'] = pd.to_datetime(df['Último Contato em'], dayfirst=True, errors='coerce')
@@ -294,8 +294,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📌 Módulos do Sistema")
 
 OPCOES_MODULOS = [
-    "📊 Visão Geral",
-    "🌡️ Matriz de Aging (Etapas x Dias)",
+    "📊 Visão Geral da Carteira",
     "⚡ Movimentações & Leads por Data",
     "1. Aguardando 1ª Interação (Em Tentativa)", 
     "2. Em Atendimento", 
@@ -348,129 +347,115 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    # FUNÇÃO REUTILIZÁVEL: RENDERIZAR MATRIZ DE AGING
-    def renderizar_matriz_aging():
-        st.subheader("🌡️ Matriz Geral de Aging: Etapas Ativas x Dias Sem Contato")
-        st.caption("Visão consolidada da temperatura da carteira de cada corretor nas 4 etapas ativas de conversão.")
+    # --- MÓDULO 1: VISÃO GERAL REFORMULADA (MACRO PRIMEIRO, DETALHES DEPOIS) ---
+    if modulo_ativo == "📊 Visão Geral da Carteira":
+        st.subheader("Panorama Comercial da Carteira Ativa")
+        st.caption("Visão consolidada por corretor, separando Em Tentativa, Em Atendimento e Visitas.")
 
-        df_ativos_funil = df[df['Etapa_Matriz'].notna() & (~df['Lead_Bloqueado'])].copy()
-        
-        ordem_etapas = ['1. Em Tentativa', '2. Em Atendimento', '3. Visita Agendada', '4. Visita Realizada']
-        ordem_faixas = ['0 a 3 dias', '4 a 10 dias', 'Mais de 10 dias']
+        df_ativos_funil = df[df['Etapa_Macro'].notna() & (~df['Lead_Bloqueado'])].copy()
 
-        # Montagem das colunas com cabeçalhos limpos
-        linhas_matriz = []
+        # 1. RESUMO EXECUTIVO DO TOPO
+        t_tent = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Em Tentativa"])
+        t_atend = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Em Atendimento"])
+        t_vagend = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Visita Agendada"])
+        t_vrealiz = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Visita Realizada"])
+        t_total_ativo = len(df_ativos_funil)
+
+        c_top1, c_top2, c_top3, c_top4, c_top5 = st.columns(5)
+        c_top1.metric("1. Em Tentativa", t_tent)
+        c_top2.metric("2. Em Atendimento", t_atend)
+        c_top3.metric("3. Visitas Agendadas", t_vagend)
+        c_top4.metric("4. Visitas Realizadas", t_vrealiz)
+        c_top5.metric("Total Carteira Ativa", t_total_ativo)
+
+        st.markdown("---")
+
+        # 2. TABELA MACRO LIMPA: TOTAIS POR CORRETOR (EXATAMENTE COMO PEDIDO)
+        st.markdown("### 📋 1. Totais por Corretor (Visão Geral Limpa)")
+        st.caption("Enxergue primeiro os volumes totais de cada corretor em Tentativa e Atendimento:")
+
+        tabela_macro_dados = []
         for corr in sorted(df_ativos_funil['Corretor'].dropna().unique()):
             df_c = df_ativos_funil[df_ativos_funil['Corretor'] == corr]
-            linha = {'Corretor': corr}
-            total_corr = len(df_c)
-            
-            for etapa in ordem_etapas:
-                for faixa in ordem_faixas:
-                    qtd = len(df_c[(df_c['Etapa_Matriz'] == etapa) & (df_c['Faixa_Atraso'] == faixa)])
-                    col_nome = f"{etapa} | {faixa}"
-                    linha[col_nome] = qtd
-            
-            linha['Total Carteira Ativa'] = total_corr
-            linhas_matriz.append(linha)
+            tabela_macro_dados.append({
+                'Corretor': corr,
+                'Em Tentativa (Total)': len(df_c[df_c['Etapa_Macro'] == "Em Tentativa"]),
+                'Em Atendimento (Total)': len(df_c[df_c['Etapa_Macro'] == "Em Atendimento"]),
+                'Visitas Agendadas': len(df_c[df_c['Etapa_Macro'] == "Visita Agendada"]),
+                'Visitas Realizadas': len(df_c[df_c['Etapa_Macro'] == "Visita Realizada"]),
+                'Total Ativos': len(df_c)
+            })
 
-        # Linha Totalizadora da Equipe
-        linha_total = {'Corretor': '🔥 TOTAL EQUIPE'}
-        for etapa in ordem_etapas:
-            for faixa in ordem_faixas:
-                qtd_total = len(df_ativos_funil[(df_ativos_funil['Etapa_Matriz'] == etapa) & (df_ativos_funil['Faixa_Atraso'] == faixa)])
-                linha_total[f"{etapa} | {faixa}"] = qtd_total
-        linha_total['Total Carteira Ativa'] = len(df_ativos_funil)
-        linhas_matriz.append(linha_total)
-
-        df_matriz_view = pd.DataFrame(linhas_matriz)
-        st.dataframe(df_matriz_view, use_container_width=True, hide_index=True)
+        df_macro_tabela = pd.DataFrame(tabela_macro_dados).sort_values(by='Total Ativos', ascending=False)
+        st.dataframe(df_macro_tabela, use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.markdown("### 🔍 Raio-X Detalhado por Corretor")
-        col_m_c1, col_m_c2 = st.columns([1, 2])
-        
-        with col_m_c1:
-            corr_aging_sel = st.selectbox("Escolha um Corretor para auditar a carteira ativa:", corretores_disponiveis, key="sel_aging_corr_box")
-            df_c_sel = df_ativos_funil[df_ativos_funil['Corretor'] == corr_aging_sel]
-            
-            etapa_filtro_drill = st.selectbox("Filtrar Etapa Específica:", ["Todas as Etapas"] + ordem_etapas, key="drill_etapa_sel")
-            faixa_filtro_drill = st.selectbox("Filtrar Faixa de Dias:", ["Todas as Faixas"] + ordem_faixas, key="drill_faixa_sel")
 
-        with col_m_c2:
-            st.markdown(f"**Indicadores de Carteira de {corr_aging_sel}:**")
-            k_a1, k_a2, k_a3 = st.columns(3)
-            k_a1.metric("0 a 3 dias (Em dia)", len(df_c_sel[df_c_sel['Faixa_Atraso'] == '0 a 3 dias']))
-            k_a2.metric("4 a 10 dias (Atenção)", len(df_c_sel[df_c_sel['Faixa_Atraso'] == '4 a 10 dias']))
-            k_a3.metric("+10 dias (Gargalo)", len(df_c_sel[df_c_sel['Faixa_Atraso'] == 'Mais de 10 dias']), delta=f"-{len(df_c_sel[df_c_sel['Faixa_Atraso'] == 'Mais de 10 dias'])}" if len(df_c_sel[df_c_sel['Faixa_Atraso'] == 'Mais de 10 dias']) > 0 else "0", delta_color="inverse")
+        # 3. SEGUNDO PASSO: DETALHAMENTO DA ETAPA E TEMPO (0 a 3, 4 a 10, +10 dias)
+        st.markdown("### 🔍 2. Detalhar Etapa e Tempo Sem Contato")
+        st.caption("Escolha a etapa que você quer abrir para ver a divisão de tempo (0 a 3 dias, 4 a 10 dias e mais de 10 dias) de cada corretor.")
 
-        # Tabela Detalhada com os clientes filtrados
-        df_drill = df_c_sel.copy()
-        if etapa_filtro_drill != "Todas as Etapas":
-            df_drill = df_drill[df_drill['Etapa_Matriz'] == etapa_filtro_drill]
-        if faixa_filtro_drill != "Todas as Faixas":
-            df_drill = df_drill[df_drill['Faixa_Atraso'] == faixa_filtro_drill]
+        etapa_escolhida_detalhe = st.radio(
+            "Selecione a etapa para ver a quebra por dias:",
+            ["Em Tentativa", "Em Atendimento", "Visitas (Agendadas + Realizadas)"],
+            horizontal=True
+        )
 
-        st.markdown(f"#### Detalhamento dos Leads de **{corr_aging_sel}** ({len(df_drill)} leads localizados):")
-        cols_drill_show = [
-            'Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Dias_Sem_Interacao',
-            'Faixa_Atraso', 'Último Contato em', 'Descrição Último Contato'
-        ]
-        st.dataframe(df_drill[cols_drill_show].rename(columns={
+        if etapa_escolhida_detalhe == "Visitas (Agendadas + Realizadas)":
+            df_etapa_sub = df_ativos_funil[df_ativos_funil['Etapa_Macro'].isin(["Visita Agendada", "Visita Realizada"])].copy()
+        else:
+            df_etapa_sub = df_ativos_funil[df_ativos_funil['Etapa_Macro'] == etapa_escolhida_detalhe].copy()
+
+        # Cards do tempo para a etapa selecionada
+        n_0_3 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "0 a 3 dias"])
+        n_4_10 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "4 a 10 dias"])
+        n_mais_10 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "Mais de 10 dias"])
+
+        col_t1, col_t2, col_t3 = st.columns(3)
+        col_t1.metric(f"{etapa_escolhida_detalhe}: 0 a 3 dias (Em Dia)", n_0_3)
+        col_t2.metric(f"{etapa_escolhida_detalhe}: 4 a 10 dias (Atenção)", n_4_10)
+        col_t3.metric(f"{etapa_escolhida_detalhe}: Mais de 10 dias (Crítico)", n_mais_10, delta=f"-{n_mais_10}" if n_mais_10 > 0 else "0", delta_color="inverse")
+
+        # Tabela por Corretor na Etapa Selecionada
+        tabela_tempo_corretores = []
+        for corr in sorted(df_etapa_sub['Corretor'].dropna().unique()):
+            df_c_etapa = df_etapa_sub[df_etapa_sub['Corretor'] == corr]
+            tabela_tempo_corretores.append({
+                'Corretor': corr,
+                '0 a 3 dias': len(df_c_etapa[df_c_etapa['Faixa_Atraso'] == "0 a 3 dias"]),
+                '4 a 10 dias': len(df_c_etapa[df_c_etapa['Faixa_Atraso'] == "4 a 10 dias"]),
+                'Mais de 10 dias': len(df_c_etapa[df_c_etapa['Faixa_Atraso'] == "Mais de 10 dias"]),
+                'Total na Etapa': len(df_c_etapa)
+            })
+
+        df_tempo_view = pd.DataFrame(tabela_tempo_corretores).sort_values(by='Mais de 10 dias', ascending=False)
+        st.dataframe(df_tempo_view, use_container_width=True, hide_index=True)
+
+        # 4. LISTA NOMINAL DOS LEADS COM FILTRO DIRETO
+        st.markdown(f"#### 👤 Ver Leads Individuais de **{etapa_escolhida_detalhe}**")
+        col_f_c1, col_f_c2 = st.columns(2)
+        with col_f_c1:
+            filtro_corr_drill = st.selectbox("Escolha o Corretor:", ["Todos os Corretores"] + sorted(df_etapa_sub['Corretor'].dropna().unique().tolist()), key="sel_corr_drill_list")
+        with col_f_c2:
+            filtro_faixa_drill = st.selectbox("Escolha a Faixa de Atraso:", ["Todas as Faixas", "Mais de 10 dias (Apenas Críticos)", "4 a 10 dias", "0 a 3 dias"], key="sel_faixa_drill_list")
+
+        df_drill_final = df_etapa_sub.copy()
+        if filtro_corr_drill != "Todos os Corretores":
+            df_drill_final = df_drill_final[df_drill_final['Corretor'] == filtro_corr_drill]
+
+        if filtro_faixa_drill == "Mais de 10 dias (Apenas Críticos)":
+            df_drill_final = df_drill_final[df_drill_final['Faixa_Atraso'] == "Mais de 10 dias"]
+        elif filtro_faixa_drill != "Todas as Faixas":
+            df_drill_final = df_drill_final[df_drill_final['Faixa_Atraso'] == filtro_faixa_drill]
+
+        st.caption(f"Mostrando {len(df_drill_final)} leads:")
+        cols_show_det = ['Nome Cliente', 'Celular_Limpo', 'Corretor', 'Etapa do Funil', 'Dias_Sem_Interacao', 'Faixa_Atraso', 'Último Contato em', 'Descrição Último Contato']
+        st.dataframe(df_drill_final[cols_show_det].rename(columns={
             'Nome Cliente': 'Cliente',
             'Celular_Limpo': 'Celular',
-            'Descrição Último Contato': 'Última Anotação no CRM'
+            'Dias_Sem_Interacao': 'Dias Parado',
+            'Descrição Último Contato': 'Última Anotação'
         }), use_container_width=True, hide_index=True)
-
-    # --- MÓDULO 1: VISÃO GERAL ---
-    if modulo_ativo == "📊 Visão Geral":
-        st.subheader("Panorama Consolidado da Base Importada")
-        st.caption("Visão macro de 100% dos leads carregados na planilha atual, segmentados por estágio, motivos de perda e corretores.")
-
-        total_base = len(df)
-        total_1a = len(df[df['Tipo_Lead'] == "1. Aguardando 1ª Interação"])
-        total_atend = len(df[df['Tipo_Lead'] == "2. Em Atendimento"])
-        total_vis = len(df[df['Tipo_Lead'] == "3. Visitas & Fechamento"])
-        total_recup = len(df[df['Tipo_Lead'] == "4. Perdidos para Recuperação"])
-
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Total de Leads na Planilha", total_base)
-        m2.metric("Em Tentativa (1ª Interação)", total_1a)
-        m3.metric("Em Atendimento Ativo", total_atend)
-        m4.metric("Visitas & Fechamentos", total_vis)
-        m5.metric("Fila de Recuperação", total_recup)
-
-        st.markdown("---")
-        
-        # Inserção da Matriz de Aging logo no panorama geral
-        renderizar_matriz_aging()
-
-        st.markdown("---")
-        col_v1, col_v2 = st.columns([1, 1])
-
-        with col_v1:
-            st.markdown("#### 📌 Distribuição por Etapa do Funil no CRM")
-            df_etapas = df['Etapa do Funil'].value_counts().reset_index()
-            df_etapas.columns = ['Etapa do Funil', 'Quantidade de Leads']
-            df_etapas['% da Base'] = (df_etapas['Quantidade de Leads'] / total_base * 100).map("{:.1f}%".format)
-            st.dataframe(df_etapas, use_container_width=True, hide_index=True)
-
-        with col_v2:
-            st.markdown("#### ❌ Análise dos Motivos de Perda (Percentual)")
-            df_perdas_base = df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')].copy()
-            total_perdas = len(df_perdas_base)
-            if total_perdas > 0:
-                loss_counts = df_perdas_base['Motivo Perda'].value_counts().reset_index()
-                loss_counts.columns = ['Motivo de Perda', 'Quantidade']
-                loss_counts['% dos Perdidos'] = (loss_counts['Quantidade'] / total_perdas * 100).map("{:.1f}%".format)
-                loss_counts['% da Base Total'] = (loss_counts['Quantidade'] / total_base * 100).map("{:.1f}%".format)
-                st.dataframe(loss_counts, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhum lead com motivo de perda informado.")
-
-    # --- MÓDULO MATRIZ DEDICADA ---
-    elif modulo_ativo == "🌡️ Matriz de Aging (Etapas x Dias)":
-        renderizar_matriz_aging()
 
     # --- MÓDULO 2: MOVIMENTAÇÕES POR DATA ---
     elif modulo_ativo == "⚡ Movimentações & Leads por Data":
