@@ -9,7 +9,7 @@ import io
 
 st.set_page_config(page_title="Gestão Comercial & Retrabalho de Leads", layout="wide")
 
-# CSS para layout limpo
+# CSS para garantir quebra limpa
 st.markdown("""
 <style>
     div[data-baseweb="tab-list"] {
@@ -140,7 +140,7 @@ def render_botao_copiar(texto_para_copiar, rotulo="📋 Copiar Lista para o What
         {rotulo}
     </button>
     <div id="status_copia" style="font-size: 13px; color: #155724; font-weight: 500; text-align: center; display: none;">
-        ✅ Lista copiada com sucesso para sua área de transferência!
+        ✅ Copiado com sucesso para sua área de transferência!
     </div>
     <script>
     document.getElementById("btn_copiar").addEventListener("click", function() {{
@@ -295,6 +295,7 @@ st.sidebar.markdown("### 📌 Módulos do Sistema")
 
 OPCOES_MODULOS = [
     "📊 Visão Geral da Carteira",
+    "📑 Central de Relatórios (Corretores & Loteadora)",
     "⚡ Movimentações & Leads por Data",
     "1. Aguardando 1ª Interação (Em Tentativa)", 
     "2. Em Atendimento", 
@@ -303,7 +304,6 @@ OPCOES_MODULOS = [
     "🎯 Auditoria: Cobrança de Carteira",
     "🔄 Auditoria: Fila de Recuperação (Blocklist + Resgates)",
     "6. Comparador de Planilhas (Raio-X)",
-    "📑 Central de Relatórios",
     "🚫 Bloqueio de Leads"
 ]
 
@@ -347,14 +347,22 @@ if arquivo_atual:
 
     corretores_disponiveis = sorted([c for c in df['Corretor'].dropna().unique() if str(c).strip() != ""])
 
-    # --- MÓDULO 1: VISÃO GERAL REFORMULADA (MACRO PRIMEIRO, DETALHES DEPOIS) ---
+    # Carrega base anterior para cruzamento de evolução se existir
+    df_ant = None
+    if arquivo_anterior:
+        try:
+            df_crm_ant = pd.read_excel(arquivo_anterior, sheet_name=0)
+            df_ant = preparar_dataframe(df_crm_ant, data_referencia=ref_dt)
+        except Exception:
+            df_ant = None
+
+    # --- MÓDULO 1: VISÃO GERAL (MACRO PRIMEIRO, DRILL-DOWN DEPOIS) ---
     if modulo_ativo == "📊 Visão Geral da Carteira":
         st.subheader("Panorama Comercial da Carteira Ativa")
         st.caption("Visão consolidada por corretor, separando Em Tentativa, Em Atendimento e Visitas.")
 
         df_ativos_funil = df[df['Etapa_Macro'].notna() & (~df['Lead_Bloqueado'])].copy()
 
-        # 1. RESUMO EXECUTIVO DO TOPO
         t_tent = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Em Tentativa"])
         t_atend = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Em Atendimento"])
         t_vagend = len(df_ativos_funil[df_ativos_funil['Etapa_Macro'] == "Visita Agendada"])
@@ -370,9 +378,8 @@ if arquivo_atual:
 
         st.markdown("---")
 
-        # 2. TABELA MACRO LIMPA: TOTAIS POR CORRETOR (EXATAMENTE COMO PEDIDO)
-        st.markdown("### 📋 1. Totais por Corretor (Visão Geral Limpa)")
-        st.caption("Enxergue primeiro os volumes totais de cada corretor em Tentativa e Atendimento:")
+        st.markdown("### 📋 1. Totais por Corretor (Visão Macro)")
+        st.caption("Acompanhe o volume total sob responsabilidade de cada profissional:")
 
         tabela_macro_dados = []
         for corr in sorted(df_ativos_funil['Corretor'].dropna().unique()):
@@ -391,12 +398,11 @@ if arquivo_atual:
 
         st.markdown("---")
 
-        # 3. SEGUNDO PASSO: DETALHAMENTO DA ETAPA E TEMPO (0 a 3, 4 a 10, +10 dias)
-        st.markdown("### 🔍 2. Detalhar Etapa e Tempo Sem Contato")
-        st.caption("Escolha a etapa que você quer abrir para ver a divisão de tempo (0 a 3 dias, 4 a 10 dias e mais de 10 dias) de cada corretor.")
+        st.markdown("### 🔍 2. Detalhamento de Etapa & Tempo Sem Contato")
+        st.caption("Escolha a etapa para abrir a quebra por dias sem interação (0 a 3 dias, 4 a 10 dias e mais de 10 dias).")
 
         etapa_escolhida_detalhe = st.radio(
-            "Selecione a etapa para ver a quebra por dias:",
+            "Selecione a etapa para ver a quebra de atraso:",
             ["Em Tentativa", "Em Atendimento", "Visitas (Agendadas + Realizadas)"],
             horizontal=True
         )
@@ -406,7 +412,6 @@ if arquivo_atual:
         else:
             df_etapa_sub = df_ativos_funil[df_ativos_funil['Etapa_Macro'] == etapa_escolhida_detalhe].copy()
 
-        # Cards do tempo para a etapa selecionada
         n_0_3 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "0 a 3 dias"])
         n_4_10 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "4 a 10 dias"])
         n_mais_10 = len(df_etapa_sub[df_etapa_sub['Faixa_Atraso'] == "Mais de 10 dias"])
@@ -416,7 +421,6 @@ if arquivo_atual:
         col_t2.metric(f"{etapa_escolhida_detalhe}: 4 a 10 dias (Atenção)", n_4_10)
         col_t3.metric(f"{etapa_escolhida_detalhe}: Mais de 10 dias (Crítico)", n_mais_10, delta=f"-{n_mais_10}" if n_mais_10 > 0 else "0", delta_color="inverse")
 
-        # Tabela por Corretor na Etapa Selecionada
         tabela_tempo_corretores = []
         for corr in sorted(df_etapa_sub['Corretor'].dropna().unique()):
             df_c_etapa = df_etapa_sub[df_etapa_sub['Corretor'] == corr]
@@ -431,7 +435,6 @@ if arquivo_atual:
         df_tempo_view = pd.DataFrame(tabela_tempo_corretores).sort_values(by='Mais de 10 dias', ascending=False)
         st.dataframe(df_tempo_view, use_container_width=True, hide_index=True)
 
-        # 4. LISTA NOMINAL DOS LEADS COM FILTRO DIRETO
         st.markdown(f"#### 👤 Ver Leads Individuais de **{etapa_escolhida_detalhe}**")
         col_f_c1, col_f_c2 = st.columns(2)
         with col_f_c1:
@@ -454,8 +457,218 @@ if arquivo_atual:
             'Nome Cliente': 'Cliente',
             'Celular_Limpo': 'Celular',
             'Dias_Sem_Interacao': 'Dias Parado',
-            'Descrição Último Contato': 'Última Anotação'
+            'Descrição Último Contato': 'Última Anotação no CRM'
         }), use_container_width=True, hide_index=True)
+
+    # --- MÓDULO: CENTRAL DE RELATÓRIOS (CORRETORES COM EVOLUÇÃO + WHATSAPP) ---
+    elif modulo_ativo == "📑 Central de Relatórios (Corretores & Loteadora)":
+        st.subheader("Central de Relatórios Executivos & Disparos Individuais")
+        st.caption("Gere o relatório individual de evolução para cada corretor e o dossiê estratégico para a loteadora.")
+
+        sub_aba_corr, sub_aba_loteadora = st.tabs(["👤 Relatório Individual do Corretor (com Evolução)", "🏢 Dossiê da Loteadora"])
+
+        # 1. RELATÓRIO DO CORRETOR
+        with sub_aba_corr:
+            st.markdown("### 📤 Gerador de Relatório Individual para o Corretor")
+            st.caption("Gera um relatório pronto para WhatsApp com a evolução e a lista dos leads para cobrar prioridade.")
+
+            corr_alvo_rel = st.selectbox("Selecione o Corretor:", corretores_disponiveis, key="sel_rep_indiv_corr")
+            df_c_base = df[df['Corretor'] == corr_alvo_rel].copy()
+            df_c_ativos = df_c_base[df_c_base['Etapa_Macro'].notna() & (~df_c_base['Lead_Bloqueado'])].copy()
+
+            # Totais do corretor
+            tot_corr_ativos = len(df_c_ativos)
+            c_tent = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Tentativa'])
+            c_atend = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Atendimento'])
+            c_vis_ag = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Visita Agendada'])
+            c_vis_re = len(df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Visita Realizada'])
+
+            c_0_3 = len(df_c_ativos[df_c_ativos['Faixa_Atraso'] == '0 a 3 dias'])
+            c_4_10 = len(df_c_ativos[df_c_ativos['Faixa_Atraso'] == '4 a 10 dias'])
+            c_mais_10 = len(df_c_ativos[df_c_ativos['Faixa_Atraso'] == 'Mais de 10 dias'])
+
+            # Cards do Corretor
+            r_c1, r_c2, r_c3, r_c4 = st.columns(4)
+            r_c1.metric("Total Carteira Ativa", tot_corr_ativos)
+            r_c2.metric("🟢 Em dia (0 a 3 dias)", c_0_3)
+            r_c3.metric("🟡 Atenção (4 a 10 dias)", c_4_10)
+            r_c4.metric("🔴 Crítico (+10 dias)", c_mais_10, delta=f"-{c_mais_10}" if c_mais_10 > 0 else "0", delta_color="inverse")
+
+            # Cálculo de Evolução Comparativa (se planilha anterior existir)
+            evolucao_texto_whats = ""
+            if df_ant is not None:
+                # Cruza leads do corretor na anterior e atual
+                df_ant_c = df_ant[df_ant['Corretor'] == corr_alvo_rel]
+                ant_map = df_ant_c.set_index('lead_key')['Etapa do Funil'].to_dict()
+                
+                avancos = 0
+                novos_contatos = 0
+                for _, r_now in df_c_base.iterrows():
+                    k = r_now['lead_key']
+                    if k in ant_map:
+                        etapa_antiga = str(ant_map[k]).strip()
+                        etapa_nova = str(r_now['Etapa do Funil']).strip()
+                        if etapa_antiga != etapa_nova and etapa_nova not in ['Em Tentativa', 'Perdido']:
+                            avancos += 1
+
+                evolucao_texto_whats = f"\n📈 *EVOLUÇÃO RECENTE (VS. RELATÓRIO ANTERIOR):*\n• Leads que avançaram de etapa: *{avancos}*\n"
+
+            # Montagem do Texto para WhatsApp
+            hoje_formatada = datetime.datetime.now().strftime("%d/%m/%Y")
+            msg_whatsapp_corretor = f"📊 *RAIO-X DE CARTEIRA & EVOLUÇÃO COMERCIAL*\n"
+            msg_whatsapp_corretor += f"👤 *Consultor:* {corr_alvo_rel}\n"
+            msg_whatsapp_corretor += f"📅 *Posição em:* {hoje_formatada}\n"
+            msg_whatsapp_corretor += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg_whatsapp_corretor += f"🎯 *SUA CARTEIRA ATIVA ({tot_corr_ativos} leads):*\n"
+            msg_whatsapp_corretor += f"• Em Tentativa (1º Contato): {c_tent}\n"
+            msg_whatsapp_corretor += f"• Em Atendimento Ativo: {c_atend}\n"
+            msg_whatsapp_corretor += f"• Visitas Agendadas: {c_vis_ag}\n"
+            msg_whatsapp_corretor += f"• Visitas Realizadas: {c_vis_re}\n"
+            msg_whatsapp_corretor += f"{evolucao_texto_whats}"
+            msg_whatsapp_corretor += f"\n⏱️ *TEMPERATURA DOS SEUS CONTATOS:*\n"
+            msg_whatsapp_corretor += f"🟢 *0 a 3 dias (Em dia):* {c_0_3} clientes\n"
+            msg_whatsapp_corretor += f"🟡 *4 a 10 dias (Atenção):* {c_4_10} clientes\n"
+            msg_whatsapp_corretor += f"🔴 *+10 dias (Crítico / Sem contato):* {c_mais_10} clientes\n"
+
+            # Lista dos Críticos (+10 dias)
+            df_criticos_corr = df_c_ativos[df_c_ativos['Faixa_Atraso'] == 'Mais de 10 dias'].sort_values(by='Dias_Sem_Interacao', ascending=False)
+            if not df_criticos_corr.empty:
+                msg_whatsapp_corretor += f"\n🚨 *PRIORIDADE DE HOJE (+10 DIAS PARADOS):*\n"
+                for _, r_crit in df_criticos_corr.head(10).iterrows():
+                    msg_whatsapp_corretor += f"• *{r_crit['Nome Cliente']}* - {r_crit['Celular_Limpo']} ({r_crit['Etapa do Funil']}) | Parado há {r_crit['Dias_Sem_Interacao']} dias\n"
+                if len(df_criticos_corr) > 10:
+                    msg_whatsapp_corretor += f"... e mais {len(df_criticos_corr) - 10} leads críticos.\n"
+            
+            msg_whatsapp_corretor += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            msg_whatsapp_corretor += f"💡 *Foco:* Fazer contato com os clientes em atenção/críticos e atualizar as anotações no CRM hoje!"
+
+            st.markdown("---")
+            st.markdown("#### 📱 Mensagem Pronta para o WhatsApp do Corretor:")
+            render_botao_copiar(msg_whatsapp_corretor, f"📋 Copiar Relatório Completo de {corr_alvo_rel}")
+            st.code(msg_whatsapp_corretor, language="text")
+
+            st.markdown("---")
+            st.markdown(f"#### 📥 Baixar Relatório em Planilha Excel ({corr_alvo_rel})")
+            
+            # Geração de arquivo Excel formatado com abas por etapa
+            buffer_corr_excel = io.BytesIO()
+            with pd.ExcelWriter(buffer_corr_excel, engine='openpyxl') as writer:
+                # Aba 1: Resumo Executivo
+                df_resumo_exp = pd.DataFrame([{
+                    'Consultor': corr_alvo_rel,
+                    'Total Carteira Ativa': tot_corr_ativos,
+                    'Em Tentativa': c_tent,
+                    'Em Atendimento': c_atend,
+                    'Visitas Agendadas': c_vis_ag,
+                    'Visitas Realizadas': c_vis_re,
+                    '0 a 3 dias (Em dia)': c_0_3,
+                    '4 a 10 dias (Atenção)': c_4_10,
+                    'Mais de 10 dias (Crítico)': c_mais_10
+                }])
+                df_resumo_exp.to_excel(writer, index=False, sheet_name="Resumo_Carteira")
+                
+                cols_exp = ['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Dias_Sem_Interacao', 'Faixa_Atraso', 'Último Contato em', 'Descrição Último Contato']
+                
+                # Aba 2: Críticos
+                if not df_criticos_corr.empty:
+                    df_criticos_corr[cols_exp].to_excel(writer, index=False, sheet_name="Criticos_Mais_10_Dias")
+                
+                # Aba 3: Em Atendimento
+                df_atend_corr = df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Atendimento']
+                if not df_atend_corr.empty:
+                    df_atend_corr[cols_exp].to_excel(writer, index=False, sheet_name="Em_Atendimento")
+                
+                # Aba 4: Em Tentativa
+                df_tent_corr = df_c_ativos[df_c_ativos['Etapa_Macro'] == 'Em Tentativa']
+                if not df_tent_corr.empty:
+                    df_tent_corr[cols_exp].to_excel(writer, index=False, sheet_name="Em_Tentativa")
+
+            st.download_button(
+                label=f"📥 Baixar Dossiê Excel de {corr_alvo_rel} (.xlsx)",
+                data=buffer_corr_excel.getvalue(),
+                file_name=f"relatorio_evolucao_{corr_alvo_rel.replace(' ', '_')}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # 2. RELATÓRIO DA LOTEADORA
+        with sub_aba_loteadora:
+            st.markdown("### 🏢 Dossiê Estratégico para a Loteadora")
+            st.caption("Composição de canais de marketing, taxa de conversão, volume financeiro e motivos de descarte.")
+
+            tot_leads = len(df)
+            tot_visitas_agend = len(df[df['Etapa do Funil'] == 'Visita Agendada'])
+            tot_visitas_realiz = len(df[df['Etapa do Funil'] == 'Visita Realizada'])
+            tot_vendas = len(df[df['Etapa do Funil'] == 'Negócio Fechado.'])
+            tx_visita = ((tot_visitas_agend + tot_visitas_realiz) / tot_leads * 100) if tot_leads > 0 else 0
+            tx_venda = (tot_vendas / tot_leads * 100) if tot_leads > 0 else 0
+
+            rl1, rl2, rl3, rl4 = st.columns(4)
+            rl1.metric("Leads Totais Captados", tot_leads)
+            rl2.metric("Visitas (Agendadas + Feitas)", tot_visitas_agend + tot_visitas_realiz, f"{tx_visita:.1f}% conversão")
+            rl3.metric("Negócios Fechados", tot_vendas, f"{tx_venda:.2f}% de vendas")
+            
+            if 'VGN (Em negociação)' in df.columns:
+                def limpar_vgn(v):
+                    if pd.isna(v): return 0.0
+                    s = str(v).replace('.', '').replace(',', '.')
+                    try: return float(s)
+                    except: return 0.0
+                vgn_soma = df['VGN (Em negociação)'].apply(limpar_vgn).sum()
+                rl4.metric("Pipeline VGN Ativo", f"R$ {vgn_soma:,.2f}")
+            else:
+                rl4.metric("Pipeline VGN", "N/D")
+
+            st.markdown("---")
+            col_lot1, col_lot2 = st.columns([1, 1])
+
+            with col_lot1:
+                st.markdown("#### 📢 Desempenho por Canal de Mídia (Origem)")
+                if 'Origem (Tipo Mídia)' in df.columns:
+                    orig_grp = df.groupby('Origem (Tipo Mídia)').agg(
+                        Total_Leads=('Nome Cliente', 'count'),
+                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
+                    ).reset_index()
+                    orig_grp['% Conversão em Visita'] = (orig_grp['Visitas'] / orig_grp['Total_Leads'] * 100).map("{:.1f}%".format)
+                    st.dataframe(orig_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
+
+            with col_lot2:
+                st.markdown("#### 🎯 Desempenho por Campanha de Tráfego")
+                if 'Campanha' in df.columns:
+                    camp_grp = df.groupby('Campanha').agg(
+                        Total_Leads=('Nome Cliente', 'count'),
+                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
+                    ).reset_index()
+                    camp_grp['% Visita'] = (camp_grp['Visitas'] / camp_grp['Total_Leads'] * 100).map("{:.1f}%".format)
+                    st.dataframe(camp_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.markdown("#### 🏆 Performance Geral dos Corretores para a Loteadora")
+            perf_loteadora = df.groupby('Corretor').agg(
+                Total_Recebido=('Nome Cliente', 'count'),
+                Em_Atendimento=('Tipo_Lead', lambda s: (s == "2. Em Atendimento").sum()),
+                Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada']).sum()),
+                Vendas=('Etapa do Funil', lambda s: (s == 'Negócio Fechado.').sum()),
+                Perdidos=('Etapa do Funil', lambda s: s.str.contains('Perdido').sum())
+            ).reset_index()
+            perf_loteadora['% Aproveitamento'] = ((perf_loteadora['Visitas'] + perf_loteadora['Vendas']) / perf_loteadora['Total_Recebido'] * 100).map("{:.1f}%".format)
+            st.dataframe(perf_loteadora.sort_values(by='Visitas', ascending=False), use_container_width=True, hide_index=True)
+
+            buffer_lot = io.BytesIO()
+            with pd.ExcelWriter(buffer_lot, engine='openpyxl') as writer:
+                perf_loteadora.to_excel(writer, index=False, sheet_name="Resumo_Corretores")
+                if 'Origem (Tipo Mídia)' in df.columns:
+                    orig_grp.to_excel(writer, index=False, sheet_name="Origem_Midia")
+                total_perdas_lot = len(df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')])
+                if total_perdas_lot > 0:
+                    loss_counts = df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')]['Motivo Perda'].value_counts().reset_index()
+                    loss_counts.columns = ['Motivo de Perda', 'Quantidade']
+                    loss_counts.to_excel(writer, index=False, sheet_name="Motivos_Perda")
+            st.download_button(
+                label="📥 Baixar Dossiê Executivo da Loteadora (.xlsx)",
+                data=buffer_lot.getvalue(),
+                file_name=f"dossie_executivo_loteadora_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     # --- MÓDULO 2: MOVIMENTAÇÕES POR DATA ---
     elif modulo_ativo == "⚡ Movimentações & Leads por Data":
@@ -1191,124 +1404,6 @@ if arquivo_atual:
                     'Data do Último Contato': df_feed.get('Último Contato em_atual', df_feed.get('Último Contato em', ''))
                 })
                 st.dataframe(df_feed_display, use_container_width=True, hide_index=True)
-
-    # --- MÓDULO 8: CENTRAL DE RELATÓRIOS ---
-    elif modulo_ativo == "📑 Central de Relatórios":
-        st.subheader("Central de Relatórios Executivos")
-        st.caption("Gere visões personalizadas: uma voltada para o corretor acompanhar sua carteira e outra para a loteadora avaliar o ROI e funil macro.")
-
-        sub_aba_corr, sub_aba_loteadora = st.tabs(["👤 Relatório do Corretor", "🏢 Relatório da Loteadora"])
-
-        with sub_aba_corr:
-            st.markdown("### 📋 Extrato de Carteira do Corretor")
-            corr_rel = st.selectbox("Selecione o Corretor:", corretores_disponiveis, key="sel_rep_corr")
-            df_c_rel = df[df['Corretor'] == corr_rel].copy()
-
-            t_c_total = len(df_c_rel)
-            t_c_1a = len(df_c_rel[df_c_rel['Tipo_Lead'] == "1. Aguardando 1ª Interação"])
-            t_c_atend = len(df_c_rel[df_c_rel['Tipo_Lead'] == "2. Em Atendimento"])
-            t_c_vis = len(df_c_rel[df_c_rel['Tipo_Lead'] == "3. Visitas & Fechamento"])
-            t_c_parados = len(df_c_rel[df_c_rel['Faixa_Atraso'] == "Mais de 10 dias"])
-
-            rc1, rc2, rc3, rc4 = st.columns(4)
-            rc1.metric("Total em Carteira", t_c_total)
-            rc2.metric("Em Atendimento", t_c_atend)
-            rc3.metric("Visitas / Fechamentos", t_c_vis)
-            rc4.metric("Parados há +10 dias", t_c_parados, delta=f"-{t_c_parados}" if t_c_parados > 0 else "0", delta_color="inverse")
-
-            st.markdown(f"#### Detalhamento de Leads de {corr_rel}")
-            cols_show_corr = ['Nome Cliente', 'Celular_Limpo', 'Etapa do Funil', 'Dias_Sem_Interacao', 'Faixa_Atraso', 'Último Contato em', 'Descrição Último Contato']
-            df_corr_export = df_c_rel[cols_show_corr].rename(columns={'Celular_Limpo': 'Celular'})
-            st.dataframe(df_corr_export, use_container_width=True, hide_index=True)
-
-            buffer_corr = io.BytesIO()
-            with pd.ExcelWriter(buffer_corr, engine='openpyxl') as writer:
-                df_corr_export.to_excel(writer, index=False, sheet_name=f"Carteira_{corr_rel[:15]}")
-            st.download_button(
-                label=f"📥 Baixar Relatório de {corr_rel} (.xlsx)",
-                data=buffer_corr.getvalue(),
-                file_name=f"relatorio_corretor_{corr_rel.replace(' ', '_')}_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        with sub_aba_loteadora:
-            st.markdown("### 🏢 Dossiê Estratégico para a Loteadora")
-            st.caption("Composição de canais de marketing, taxa de conversão, volume financeiro e motivos de descarte.")
-
-            tot_leads = len(df)
-            tot_visitas_agend = len(df[df['Etapa do Funil'] == 'Visita Agendada'])
-            tot_visitas_realiz = len(df[df['Etapa do Funil'] == 'Visita Realizada'])
-            tot_vendas = len(df[df['Etapa do Funil'] == 'Negócio Fechado.'])
-            tx_visita = ((tot_visitas_agend + tot_visitas_realiz) / tot_leads * 100) if tot_leads > 0 else 0
-            tx_venda = (tot_vendas / tot_leads * 100) if tot_leads > 0 else 0
-
-            rl1, rl2, rl3, rl4 = st.columns(4)
-            rl1.metric("Leads Totais Captados", tot_leads)
-            rl2.metric("Visitas (Agendadas + Feitas)", tot_visitas_agend + tot_visitas_realiz, f"{tx_visita:.1f}% conversão")
-            rl3.metric("Negócios Fechados", tot_vendas, f"{tx_venda:.2f}% de vendas")
-            
-            if 'VGN (Em negociação)' in df.columns:
-                def limpar_vgn(v):
-                    if pd.isna(v): return 0.0
-                    s = str(v).replace('.', '').replace(',', '.')
-                    try: return float(s)
-                    except: return 0.0
-                vgn_soma = df['VGN (Em negociação)'].apply(limpar_vgn).sum()
-                rl4.metric("Pipeline VGN Ativo", f"R$ {vgn_soma:,.2f}")
-            else:
-                rl4.metric("Pipeline VGN", "N/D")
-
-            st.markdown("---")
-            col_lot1, col_lot2 = st.columns([1, 1])
-
-            with col_lot1:
-                st.markdown("#### 📢 Desempenho por Canal de Mídia (Origem)")
-                if 'Origem (Tipo Mídia)' in df.columns:
-                    orig_grp = df.groupby('Origem (Tipo Mídia)').agg(
-                        Total_Leads=('Nome Cliente', 'count'),
-                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
-                    ).reset_index()
-                    orig_grp['% Conversão em Visita'] = (orig_grp['Visitas'] / orig_grp['Total_Leads'] * 100).map("{:.1f}%".format)
-                    st.dataframe(orig_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
-
-            with col_lot2:
-                st.markdown("#### 🎯 Desempenho por Campanha de Tráfego")
-                if 'Campanha' in df.columns:
-                    camp_grp = df.groupby('Campanha').agg(
-                        Total_Leads=('Nome Cliente', 'count'),
-                        Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada', 'Negócio Fechado.']).sum())
-                    ).reset_index()
-                    camp_grp['% Visita'] = (camp_grp['Visitas'] / camp_grp['Total_Leads'] * 100).map("{:.1f}%".format)
-                    st.dataframe(camp_grp.sort_values(by='Total_Leads', ascending=False), use_container_width=True, hide_index=True)
-
-            st.markdown("---")
-            st.markdown("#### 🏆 Performance Geral dos Corretores para a Loteadora")
-            perf_loteadora = df.groupby('Corretor').agg(
-                Total_Recebido=('Nome Cliente', 'count'),
-                Em_Atendimento=('Tipo_Lead', lambda s: (s == "2. Em Atendimento").sum()),
-                Visitas=('Etapa do Funil', lambda s: s.isin(['Visita Agendada', 'Visita Realizada']).sum()),
-                Vendas=('Etapa do Funil', lambda s: (s == 'Negócio Fechado.').sum()),
-                Perdidos=('Etapa do Funil', lambda s: s.str.contains('Perdido').sum())
-            ).reset_index()
-            perf_loteadora['% Aproveitamento'] = ((perf_loteadora['Visitas'] + perf_loteadora['Vendas']) / perf_loteadora['Total_Recebido'] * 100).map("{:.1f}%".format)
-            st.dataframe(perf_loteadora.sort_values(by='Visitas', ascending=False), use_container_width=True, hide_index=True)
-
-            buffer_lot = io.BytesIO()
-            with pd.ExcelWriter(buffer_lot, engine='openpyxl') as writer:
-                perf_loteadora.to_excel(writer, index=False, sheet_name="Resumo_Corretores")
-                if 'Origem (Tipo Mídia)' in df.columns:
-                    orig_grp.to_excel(writer, index=False, sheet_name="Origem_Midia")
-                total_perdas_lot = len(df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')])
-                if total_perdas_lot > 0:
-                    loss_counts = df[df['Motivo Perda'].notna() & (df['Motivo Perda'] != 'Não informado')]['Motivo Perda'].value_counts().reset_index()
-                    loss_counts.columns = ['Motivo de Perda', 'Quantidade']
-                    loss_counts.to_excel(writer, index=False, sheet_name="Motivos_Perda")
-            st.download_button(
-                label="📥 Baixar Dossiê Executivo da Loteadora (.xlsx)",
-                data=buffer_lot.getvalue(),
-                file_name=f"dossie_executivo_loteadora_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
 
     # --- MÓDULO 9: BLOQUEIO DE LEADS ---
     elif modulo_ativo == "🚫 Bloqueio de Leads":
